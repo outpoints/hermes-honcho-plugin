@@ -1,7 +1,7 @@
 manifest_version: 1
 name: hermes-honcho-plugin
-version: 0.1.0
-description: Native Hermes Desktop status and session metrics for the active Honcho workspace.
+version: 0.3.0
+description: Native Hermes Desktop cockpit for inspecting and adding to the focused Honcho session.
 author: outpoints
 homepage: https://github.com/outpoints/hermes-honcho-plugin
 license: GPL-3.0

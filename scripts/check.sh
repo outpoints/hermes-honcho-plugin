@@ -8,7 +8,7 @@ cd "$project_dir"
 
 node --check desktop/plugin.js
 node --check dashboard/dist/index.js
-node --test tests/plugin_contract.test.mjs
+node --test tests/*.test.mjs
 
 if [[ ! -x "$hermes_python" ]]; then
   hermes_python="$(command -v python3)"

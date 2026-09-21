@@ -1,9 +1,9 @@
 {
   "name": "hermes-honcho-plugin",
   "label": "Honcho",
-  "description": "Profile-aware Honcho status for Hermes Desktop.",
+  "description": "Profile-aware Honcho memory cockpit for Hermes Desktop.",
   "icon": "Database",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "tab": {
     "hidden": true
   },

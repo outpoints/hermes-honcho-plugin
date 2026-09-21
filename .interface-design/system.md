@@ -74,8 +74,8 @@ For the docked pane and very narrow route tiles:
   instead of making provenance consume four full rows.
 - Detail rows stack label above value; values are left-aligned.
 - Metric readouts use at most two columns and collapse to one when content needs it.
-- Primary actions fill available width; related quiet actions may share a row,
-  and shared action targets are at least 32px high.
+- Primary actions fill available width; related quiet actions may share a row.
+  Hermes Button variants and sizes own hit targets, padding, and radius.
 - The tab rail becomes one Hermes Select showing the current section, avoiding
   clipped or undiscoverable horizontal overflow.
 - Dialog/form controls stack; filenames and session IDs wrap instead of truncating critical identity.
@@ -85,6 +85,7 @@ For the docked pane and very narrow route tiles:
 For resized panes and small workspace tiles:
 
 - One major region per row.
+- Use the shared section Select rather than squeezing six tabs into a compact pane.
 - Metric strips use two columns.
 - Session and profile regions remain separate but can share horizontal detail rows.
 - Upload preview remains a single reading column.
@@ -114,8 +115,10 @@ No component may combine a strong border, independent shadow, and contrasting fi
 
 ## Typography
 
-- Page title: Hermes sans or restrained mono identity, medium weight, tight tracking.
-- Region title and controls: 10–11px monospace, uppercase, moderate tracking.
+- Page title: Hermes sans, 14px semibold, sentence case.
+- Region title: Hermes sans, 12–14px medium, sentence case. No bracketed terminal headings.
+- Controls: inherit the SDK primitive's typography and sizing without local overrides.
+- Field labels: 12px sans. Underscore-delimited internal labels are presentation-only and display as readable words. Never transform identifiers or source content.
 - Counts/IDs/timestamps: monospace with tabular numerals.
 - Explanations, messages, conclusions, errors, and context: Hermes sans, readable line height, maximum 65–75ch.
 - Use primary, secondary, tertiary, and quaternary text levels. Do not flatten copy into one foreground and one gray.
@@ -136,7 +139,7 @@ Padding is symmetrical unless a list row deliberately uses a shared outer gutter
 
 ### Region
 
-A region has one quiet outer boundary or a single surface shift. Its header contains a status dot, title, and real actions only. Do not render decorative minimize/maximize/close glyphs.
+A region is flat, grouped by its heading and whitespace. Avoid outer frames and repeated row dividers. A status dot in a region heading is reserved for an actual warning or failure. Do not render decorative window controls or healthy dots on every heading.
 
 ### Lineage strip
 
@@ -145,6 +148,8 @@ Show safe labels only: connection display label or local identity, profile, reso
 ### Detail list
 
 Use whitespace between rows. Add a tertiary hairline only when rows require stronger scan separation. On narrow layouts, stack label over value and left-align both.
+
+On compact and wide layouts, put label and value on the same grid row and left-align values. Declare `gridTemplateColumns` explicitly so the layout works with the host's shipped CSS, without generating new Tailwind classes.
 
 ### Metric strip
 
@@ -175,6 +180,8 @@ Do not call 10 MB a Honcho limit. Current Honcho source exposes configurable `MA
 ## Interaction and motion
 
 - Use Hermes Button, Input, Textarea, Dialog, status, loading, and copy primitives.
+- Use Hermes Tabs with arrow-key navigation at wide sizes, Select below wide, and SegmentedControl for short scope choices. Narrow scope controls use Select too.
+- Use the shared SearchField. Enter submits only the explicit search action, not its embedded Clear button, and IME composition must not submit.
 - Keep hover/press/focus transitions fast and functional.
 - No bounce, spring, background animation, or decorative motion.
 - Preserve keyboard navigation and visible focus.
@@ -193,3 +200,9 @@ Do not call 10 MB a Honcho limit. Current Honcho source exposes configurable `MA
 - Right-aligned values separated from labels by huge empty space
 - Upload limits described without distinguishing server default, server configuration, and transport behavior
 - Writes to missing sessions or automatic fallback to another profile/connection
+
+## Runtime CSS verification
+
+The plugin is uncompiled. Verify against the desktop's shipped CSS, not a Tailwind build scanning the plugin, which can hide missing utility selectors. Keep essential custom grid geometry, wrapping, and prose width in inline styles. Use container-relative page gutters clamped to the Hermes 20–64px range. Do not invent `--page-gutter-x` or `--page-gutter-y`: the host does not define them.
+
+Use a real flex/grid wrapper for section spacing. `display: contents` removes the wrapper's layout box and defeats parent `space-y-*` spacing. Compare before and after with the same data, theme, and pane dimensions.

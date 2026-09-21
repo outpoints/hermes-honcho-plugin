@@ -13,6 +13,7 @@ const sandbox = vm.createContext({
   jsx: element,
   jsxs: element,
   Codicon: 'codicon',
+  Badge: 'badge',
 })
 vm.runInContext(
   source.replace(/import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"]/g, '')
@@ -114,4 +115,53 @@ test('remote routing stays host-owned and mismatched focus cannot dispatch', asy
   assert.deepEqual(calls, ['/snapshot'])
   assert.throws(() => sandbox.requestForFocus({ ...focus, routeMismatch: true }, '/snapshot', {}), /does not match/)
   assert.equal(calls.length, 1)
+})
+
+test('native controls keep SDK styling while ownership values remain literal', () => {
+  sandbox.Button = 'Button'
+  sandbox.cn = (...parts) => parts.filter(Boolean).join(' ')
+  sandbox.useContext = () => 'wide'
+  const action = sandbox.ActionButton({ children: 'ADD_TO_SESSION', disabled: true })
+  assert.equal(action.type, 'Button')
+  assert.equal(action.props.disabled, true)
+  assert.equal(action.props.className, undefined)
+  assert.equal(renderedText(action).trim(), 'Add to session')
+  const identifier = 'USER_PEER_WITH_UNDERSCORES'
+  const row = sandbox.DetailRow({ label: 'ATTRIBUTED_PEER', value: identifier, mono: true })
+  assert.equal(renderedText(row.props.children[0]), 'Attributed peer')
+  assert.equal(renderedText(row.props.children[1]), identifier)
+  assert.ok(row.props.style.gridTemplateColumns, 'runtime layout must not depend on generated Tailwind classes')
+  assert.equal(row.props.children[1].props.style.overflowWrap, 'anywhere')
+})
+
+test('search submits on Enter or its named action, never on Clear or IME composition', () => {
+  const recorded = []
+  let stateIndex = 0
+  sandbox.useContext = () => 'wide'
+  sandbox.useState = initial => {
+    const index = stateIndex++
+    return [index === 0 ? 'ownership' : initial, value => { if (index === 4) recorded.push(value) }]
+  }
+  sandbox.useQuery = () => ({ data: { ok: true, items: [], capabilities: {} }, isFetching: false })
+  sandbox.useEffect = () => {}
+  sandbox.SearchField = 'SearchField'
+  sandbox.Input = 'Input'
+  sandbox.Select = 'Select'
+  sandbox.SelectTrigger = 'SelectTrigger'
+  sandbox.SelectValue = 'SelectValue'
+  sandbox.SelectContent = 'SelectContent'
+  sandbox.SelectItem = 'SelectItem'
+  const tree = sandbox.SearchTab()
+  const form = tree.props.children[0].props.children
+  assert.equal(form.type, 'form')
+  const event = (type, extra = {}) => ({ type, preventDefault() {}, nativeEvent: {}, ...extra })
+  form.props.onSubmit(event('submit', { nativeEvent: { submitter: { name: '' } } }))
+  assert.equal(recorded.length, 0, 'the shared clear button must not start a search')
+  form.props.onKeyDown(event('keydown', { key: 'Enter', nativeEvent: { isComposing: true }, target: { matches: () => true } }))
+  assert.equal(recorded.length, 0, 'IME Enter must not start a search')
+  form.props.onKeyDown(event('keydown', { key: 'Enter', target: { matches: () => true } }))
+  assert.equal(recorded.length, 1)
+  form.props.onSubmit(event('submit', { nativeEvent: { submitter: { name: 'honcho-search' } } }))
+  assert.equal(recorded.length, 2)
+  assert.ok(recorded.every(run => run.query === 'ownership' && run.scope === 'session'))
 })

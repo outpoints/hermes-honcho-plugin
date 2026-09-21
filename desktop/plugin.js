@@ -7,6 +7,7 @@
 
 import {
   atom,
+  Badge,
   Button,
   cn,
   Codicon,
@@ -17,11 +18,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  EmptyState,
   host,
   Input,
   PANES_AREA,
   PALETTE_AREA,
   ROUTES_AREA,
+  SearchField,
   SegmentedControl,
   Select,
   SelectContent,
@@ -32,6 +35,9 @@ import {
   Skeleton,
   StatusDot,
   STATUSBAR_AREAS,
+  Tabs,
+  TabsList,
+  TabsTrigger,
   Textarea,
   Tip,
   useMutation,
@@ -83,12 +89,13 @@ function useContainerLayout() {
   return { ref, layout }
 }
 
-function ResponsiveSurface({ className, children }) {
+function ResponsiveSurface({ className, style, children }) {
   const { ref, layout } = useContainerLayout()
   return jsx('div', {
     ref,
     'data-layout': layout,
     className,
+    style,
     children: jsx(LayoutContext.Provider, { value: layout, children })
   })
 }
@@ -100,6 +107,13 @@ function useLayout() {
 function text(value, fallback = '—') {
   if (value === null || value === undefined || value === '') return fallback
   return String(value)
+}
+
+// Presentation labels only. Never apply this to session, peer, or profile IDs.
+function uiLabel(value) {
+  if (typeof value !== 'string' || !/^[A-Z_ …]+$/.test(value)) return value
+  const words = value.toLowerCase().replaceAll('_', ' ')
+  return (words.charAt(0).toUpperCase() + words.slice(1)).replace(/\bhoncho\b/g, 'Honcho').replace(/\bhermes\b/g, 'Hermes')
 }
 
 function number(value, fallback = '—') {
@@ -123,10 +137,10 @@ function formatTime(value, fallback = 'No activity yet') {
 }
 
 function queueLabel(queue) {
-  if (!queue) return 'UNAVAILABLE'
-  if (queue.in_progress > 0) return `${number(queue.in_progress)} PROCESSING`
-  if (queue.pending > 0) return `${number(queue.pending)} PENDING`
-  return 'CAUGHT_UP'
+  if (!queue) return 'Unavailable'
+  if (queue.in_progress > 0) return `${number(queue.in_progress)} processing`
+  if (queue.pending > 0) return `${number(queue.pending)} pending`
+  return 'Caught up'
 }
 
 function stateTone(data, isError) {
@@ -236,8 +250,8 @@ function useHonchoSnapshot(options = {}) {
 }
 
 function localState(query) {
-  if (query.busy) return query.awaitingResponse ? 'AWAITING_FIRST_RESPONSE' : 'GENERATING'
-  return 'IDLE'
+  if (query.busy) return query.awaitingResponse ? 'Waiting for response' : 'Generating'
+  return 'Idle'
 }
 
 function formatBytes(value) {
@@ -272,26 +286,27 @@ function LineageStrip({ focus, snapshot }) {
   const chat = snapshot?.data?.chat
   const config = snapshot?.data?.config
   const items = [
-    ['CONNECTION', focus.connectionId],
-    ['PROFILE', focus.activeProfile],
-    ['HONCHO_SESSION', chat?.honcho_session_id],
-    ['ATTRIBUTED_PEER', config?.user_peer]
+    ['Connection', focus.connectionId],
+    ['Profile', focus.activeProfile],
+    ['Honcho session', chat?.honcho_session_id],
+    ['Attributed peer', config?.user_peer]
   ]
   const columns = layout === 'wide' ? 4 : 2
 
   return jsx('div', {
     'aria-label': 'Honcho memory lineage',
-    className: 'grid gap-px border border-(--ui-stroke-tertiary) bg-(--ui-stroke-tertiary)',
+    className: 'grid gap-3 border-b border-(--ui-stroke-tertiary) py-3',
     style: { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` },
     children: items.map(([label, value], index) =>
       jsxs('div', {
-        className: 'min-w-0 bg-(--ui-bg-card) px-3 py-2',
+        className: 'min-w-0',
         children: [
-          jsx('div', { className: 'font-mono text-[10px] uppercase tracking-[0.08em] text-(--ui-text-tertiary)', children: label }),
+          jsx('div', { className: 'text-xs text-(--ui-text-secondary)', children: label }),
           jsx('div', {
-            className: 'mt-0.5 break-words font-mono text-[11px] text-foreground',
+            className: 'mt-1 font-mono text-[11px] text-foreground',
+            style: { overflowWrap: 'anywhere' },
             title: text(value),
-            children: text(value, 'NOT_RESOLVED')
+            children: text(value, 'Not resolved')
           })
         ]
       }, `${label}-${index}`)
@@ -456,8 +471,9 @@ function AddToSessionDialog({ origin, snapshot }) {
                     resetFeedback()
                   },
                   rows: 9,
+                  'aria-label': 'Text to add to the current Honcho session',
                   placeholder: 'Paste notes, source material, or other context…',
-                  className: 'resize-y rounded-none bg-(--ui-bg-quaternary) font-sans text-xs leading-5'
+                  className: 'resize-y'
                 })
               : jsxs('div', {
                   className: 'space-y-2 border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) p-3',
@@ -556,31 +572,25 @@ function AddToSessionDialog({ origin, snapshot }) {
 }
 
 function ActionButton({ children, icon, className, ...props }) {
-  return jsx(Button, {
+  return jsxs(Button, {
     ...props,
-    variant: props.variant || 'outline',
-    size: props.size || 'xs',
-    className: cn(
-      'min-h-8 rounded-none font-mono text-[11px] font-medium uppercase tracking-[0.08em]',
-      className
-    ),
-    children: jsxs('span', {
-      className: 'inline-flex items-center gap-1.5',
-      children: [icon ? jsx(Codicon, { name: icon, size: '0.75rem' }) : null, children]
-    })
+    variant: props.variant || 'secondary',
+    size: props.size || 'default',
+    className,
+    children: [icon ? jsx(Codicon, { name: icon, size: '1em' }) : null, uiLabel(children)]
   })
 }
 
-function ConsolePanel({ title, tone = 'good', actions, children, bodyClassName }) {
+function ConsolePanel({ title, tone, actions, children, bodyClassName }) {
   return jsxs('section', {
-    className: 'min-w-0 border border-(--ui-stroke-tertiary) bg-(--ui-bg-card)',
+    className: 'min-w-0',
     children: [
       jsxs('header', {
-        className: 'flex min-h-8 items-center justify-between gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-1.5',
+        className: 'mb-2 flex flex-wrap items-center justify-between gap-2',
         children: [
           jsxs('div', {
-            className: 'flex min-w-0 items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-(--ui-text-secondary)',
-            children: [jsx(StatusDot, { tone }), jsx('span', { className: 'truncate', children: `[ ${title} ]` })]
+            className: 'flex min-w-0 items-center gap-2 text-sm font-medium text-foreground',
+            children: [tone === 'bad' || tone === 'warn' ? jsx(StatusDot, { tone }) : null, jsx('h2', { children: uiLabel(title) })]
           }),
           jsx('div', {
             className: 'flex shrink-0 items-center gap-2',
@@ -588,7 +598,7 @@ function ConsolePanel({ title, tone = 'good', actions, children, bodyClassName }
           })
         ]
       }),
-      jsx('div', { className: cn('p-3', bodyClassName), children })
+      jsx('div', { className: cn('min-w-0', bodyClassName), children })
     ]
   })
 }
@@ -596,8 +606,8 @@ function ConsolePanel({ title, tone = 'good', actions, children, bodyClassName }
 function StateLine({ tone = 'muted', title, children }) {
   return jsxs('div', {
     className: cn(
-      'flex items-start gap-2 border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) px-3 py-2.5',
-      tone === 'bad' && 'border-destructive/35'
+      'flex items-start gap-2 py-2',
+      tone === 'bad' && 'text-destructive'
     ),
     children: [
       jsx(StatusDot, { tone }),
@@ -606,13 +616,13 @@ function StateLine({ tone = 'muted', title, children }) {
         children: [
           jsx('div', {
             className: cn(
-              'font-mono text-[10px] font-medium uppercase tracking-[0.08em]',
+              'text-xs font-medium',
               tone === 'bad' ? 'text-destructive' : 'text-foreground'
             ),
-            children: title
+            children: uiLabel(title)
           }),
           children
-            ? jsx('div', { className: 'mt-1 max-w-[72ch] text-xs leading-5 text-(--ui-text-secondary)', children })
+            ? jsx('div', { className: 'mt-1 text-xs leading-5 text-(--ui-text-secondary)', style: { maxWidth: '72ch', overflowWrap: 'anywhere' }, children })
             : null
         ]
       })
@@ -665,34 +675,20 @@ function QueryState({ query, title, children }) {
 }
 
 function EmptyReadout({ title, description }) {
-  return jsxs('div', {
-    className: 'grid min-h-40 place-items-center px-4 py-8 text-center',
-    children: [
-      jsxs('div', {
-        children: [
-          jsx(Codicon, { name: 'database', size: '1.25rem', className: 'text-muted-foreground' }),
-          jsx('div', {
-            className: 'mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-foreground',
-            children: title
-          }),
-          jsx('div', { className: 'mt-1 max-w-[60ch] text-xs text-muted-foreground', children: description })
-        ]
-      })
-    ]
-  })
+  return jsx(EmptyState, { title: uiLabel(title), description, className: 'px-3 py-6' })
 }
 
 function MetricCell({ label, value, detail, accent = false }) {
   return jsxs('div', {
-    className: 'min-w-0 bg-(--ui-bg-card) px-3 py-2.5',
+    className: 'min-w-0 py-2',
     children: [
       jsx('div', {
-        className: 'font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground',
-        children: label
+        className: 'text-xs text-(--ui-text-secondary)',
+        children: uiLabel(label)
       }),
       jsx('div', {
         className: cn(
-          'mt-1 truncate font-mono text-base font-semibold tabular-nums text-foreground',
+          'mt-1 font-mono text-sm font-semibold tabular-nums text-foreground',
           accent && 'text-primary'
         ),
         title: text(value),
@@ -713,7 +709,7 @@ function MetricStrip({ children, columns = 4 }) {
   const layout = useLayout()
   const visibleColumns = layout === 'wide' ? columns : 2
   return jsx('div', {
-    className: 'grid gap-px border border-(--ui-stroke-tertiary) bg-(--ui-stroke-tertiary)',
+    className: 'grid gap-4',
     style: { gridTemplateColumns: `repeat(${visibleColumns}, minmax(0, 1fr))` },
     children
   })
@@ -723,24 +719,24 @@ function DetailRow({ label, value, mono = false, accent = false }) {
   const layout = useLayout()
   return jsxs('div', {
     className: cn(
-      'grid min-w-0 border-b border-(--ui-stroke-tertiary) py-2 last:border-0',
-      layout === 'narrow'
-        ? 'grid-cols-1 gap-1'
-        : 'grid-cols-[minmax(7rem,0.8fr)_minmax(0,1.6fr)] gap-4'
+      'grid min-w-0 py-2',
+      layout === 'narrow' ? 'gap-1' : 'gap-4'
     ),
+    style: { gridTemplateColumns: layout === 'narrow' ? 'minmax(0, 1fr)' : 'minmax(7rem, 0.8fr) minmax(0, 1.6fr)' },
     children: [
       jsx('dt', {
-        className: 'font-mono text-[10px] uppercase tracking-[0.06em] text-muted-foreground',
-        children: label
+        className: 'text-xs text-(--ui-text-secondary)',
+        children: uiLabel(label)
       }),
       jsx('dd', {
         className: cn(
           'min-w-0 break-words text-xs text-foreground',
-          layout !== 'narrow' && 'text-right',
+
           mono && 'font-mono text-[11px]',
           accent && 'text-primary'
         ),
         title: text(value),
+        style: { overflowWrap: 'anywhere' },
         children: text(value)
       })
     ]
@@ -752,10 +748,10 @@ function Diagnostics({ errors }) {
     return jsx(StateLine, { tone: 'good', title: 'ALL_READS_HEALTHY', children: 'Every requested Honcho metric responded.' })
   }
   return jsx('ul', {
-    className: 'divide-y divide-border/50 border border-border/60',
+    className: 'space-y-2',
     children: errors.map((error, index) =>
       jsxs('li', {
-        className: 'px-3 py-2',
+        className: 'py-2',
         children: [
           jsx('div', {
             className: 'font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground',
@@ -771,13 +767,13 @@ function Diagnostics({ errors }) {
 function TabRail() {
   const active = useValue($activeTab)
   const layout = useLayout()
-  if (layout === 'narrow') {
+  if (layout !== 'wide') {
     return jsxs('div', {
-      className: 'border-b border-(--ui-stroke-tertiary) pb-2',
+      className: 'min-w-0',
       children: [
         jsx('div', {
-          className: 'mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-(--ui-text-tertiary)',
-          children: 'MEMORY_SECTION'
+          className: 'sr-only',
+          children: 'Memory section'
         }),
         jsxs(Select, {
           value: active,
@@ -785,34 +781,30 @@ function TabRail() {
           children: [
             jsx(SelectTrigger, {
               'aria-label': 'Honcho memory section',
-              className: 'h-9 w-full font-mono text-xs',
+              className: 'w-full',
               children: jsx(SelectValue, {})
             }),
             jsx(SelectContent, {
-              children: TABS.map(tab => jsx(SelectItem, { value: tab, children: tab }, tab))
+              children: TABS.map(tab => jsx(SelectItem, { value: tab, children: uiLabel(tab) }, tab))
             })
           ]
         })
       ]
     })
   }
-  return jsx('div', {
-    role: 'tablist',
-    'aria-label': 'Honcho memory sections',
-    className: 'flex overflow-x-auto border-b border-border/70',
-    children: TABS.map(tab =>
-      jsx('button', {
-        type: 'button',
-        role: 'tab',
-        'aria-selected': active === tab,
-        onClick: () => $activeTab.set(tab),
-        className: cn(
-          'relative shrink-0 border-b-2 border-transparent px-3 py-2 font-mono text-[10px] font-medium tracking-[0.08em] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:bg-muted/40 focus-visible:text-foreground',
-          active === tab && 'border-primary text-primary'
-        ),
-        children: tab
-      }, tab)
-    )
+  return jsx(Tabs, {
+    value: active,
+    onValueChange: next => $activeTab.set(next),
+    children: jsx(TabsList, {
+      'aria-label': 'Honcho memory sections',
+      className: 'w-fit',
+      children: TABS.map(tab => jsx(TabsTrigger, {
+        value: tab,
+        id: `honcho-tab-${tab.toLowerCase()}`,
+        'aria-controls': 'honcho-section',
+        children: uiLabel(tab)
+      }, tab))
+    })
   })
 }
 
@@ -821,7 +813,7 @@ function PageHeader({ query }) {
   const layout = useLayout()
   const canUpload = Boolean(query.data?.ok && query.data?.chat?.found && !query.routeMismatch)
   return jsxs('header', {
-    className: cn('flex items-start justify-between gap-3', layout === 'narrow' && 'flex-col'),
+    className: cn('flex items-start justify-between gap-3', layout !== 'wide' && 'flex-col'),
     children: [
       jsxs('div', {
         children: [
@@ -829,12 +821,12 @@ function PageHeader({ query }) {
             className: 'flex items-center gap-2',
             children: [
               jsx('h1', {
-                className: 'font-mono text-lg font-semibold tracking-[0.08em] text-foreground',
-                children: 'HONCHO MEMORY'
+                className: 'text-sm font-semibold text-foreground',
+                children: 'Honcho memory'
               }),
-              jsxs('span', {
-                className: 'inline-flex items-center gap-1 border border-primary/35 bg-primary/5 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-primary',
-                children: [jsx(StatusDot, { tone }), query.data?.ok ? 'LIVE' : text(query.data?.state, 'CHECKING')]
+              jsxs(Badge, {
+                variant: tone === 'bad' ? 'destructive' : tone === 'warn' ? 'warn' : 'muted',
+                children: [jsx(StatusDot, { tone }), query.isError ? 'Unavailable' : query.data?.ok ? 'Live' : uiLabel(text(query.data?.state, 'CHECKING').toUpperCase())]
               })
             ]
           }),
@@ -889,7 +881,7 @@ function OverviewTab() {
             jsx(StateLine, {
               tone,
               title: data.ok
-                ? `CONNECTED_${text(config?.workspace_id, 'WORKSPACE')}`
+                ? `Connected to ${text(config?.workspace_id, 'workspace')}`
                 : text(data.state, 'NEEDS_ATTENTION').toUpperCase(),
               children: data.ok
                 ? `${text(config?.endpoint)} responded in ${number(data.latency_ms)} ms. Aggregate status refreshes every 10 seconds.`
@@ -921,7 +913,7 @@ function OverviewTab() {
               ]
             }),
             jsxs('div', {
-              className: 'grid grid-cols-1 gap-3',
+              className: 'grid grid-cols-1 gap-6',
               style: layout === 'wide' ? { gridTemplateColumns: 'minmax(0, 7fr) minmax(0, 5fr)' } : undefined,
               children: [
                 jsx(ConsolePanel, {
@@ -999,10 +991,10 @@ function Pager({ page, pages, isFetching, onPage }) {
 function MessageRow({ message, rank }) {
   const preview = compact(message.content, 240)
   return jsx('details', {
-    className: 'group border-b border-border/55 last:border-0 open:bg-muted/10',
+    className: 'group border-b border-(--ui-stroke-tertiary) last:border-0',
     children: [
       jsxs('summary', {
-        className: 'cursor-pointer list-none px-3 py-3 outline-none focus-visible:bg-muted/30 [&::-webkit-details-marker]:hidden',
+        className: 'cursor-pointer list-none py-3 outline-none focus-visible:bg-muted/30 [&::-webkit-details-marker]:hidden',
         children: [
           jsxs('div', {
             className: 'flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted-foreground',
@@ -1018,20 +1010,21 @@ function MessageRow({ message, rank }) {
           }),
           jsx('p', {
             className: 'mt-1.5 whitespace-pre-wrap break-words text-xs leading-5 text-foreground',
+            style: { maxWidth: '72ch', overflowWrap: 'anywhere' },
             children: preview || 'Empty message'
           })
         ]
       }),
       jsxs('div', {
-        className: 'border-t border-border/40 bg-background/30 px-3 py-3',
+        className: 'pb-3',
         children: [
-          jsx('p', { className: 'whitespace-pre-wrap break-words text-xs leading-5 text-foreground', children: text(message.content) }),
+          jsx('p', { className: 'whitespace-pre-wrap text-xs leading-5 text-foreground', style: { maxWidth: '72ch', overflowWrap: 'anywhere' }, children: text(message.content) }),
           jsxs('details', {
-            className: 'mt-3 border border-border/50',
+            className: 'mt-3',
             children: [
               jsx('summary', {
                 className: 'cursor-pointer px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground outline-none focus-visible:text-foreground',
-                children: 'MESSAGE_METADATA'
+                children: 'Message metadata'
               }),
               jsx('pre', {
                 className: 'max-h-48 overflow-auto border-t border-border/50 p-2 font-mono text-[10px] leading-4 text-muted-foreground',
@@ -1080,28 +1073,27 @@ function MessagesTab() {
 }
 
 function ScopeToggle({ value, options, onChange, label }) {
+  const layout = useLayout()
   return jsx('div', {
     role: 'group',
     'aria-label': label,
-    className: 'inline-flex border border-border/70 bg-background/40 p-0.5',
-    children: options.map(option =>
-      jsx('button', {
-        type: 'button',
-        'aria-pressed': value === option.id,
-        onClick: () => onChange(option.id),
-        className: cn(
-          'px-2.5 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-primary',
-          value === option.id && 'bg-primary text-primary-foreground'
-        ),
-        children: option.label
-      }, option.id)
-    )
+    className: 'min-w-0',
+    children: layout === 'narrow'
+      ? jsxs(Select, {
+          value,
+          onValueChange: onChange,
+          children: [
+            jsx(SelectTrigger, { 'aria-label': label, className: 'w-full', children: jsx(SelectValue, {}) }),
+            jsx(SelectContent, { children: options.map(option => jsx(SelectItem, { value: option.id, children: uiLabel(option.label) }, option.id)) })
+          ]
+        })
+      : jsx(SegmentedControl, { value, onChange, options: options.map(option => ({ ...option, label: uiLabel(option.label) })) })
   })
 }
 
 function ConclusionRow({ conclusion }) {
   return jsxs('article', {
-    className: 'border-b border-border/55 px-3 py-3 last:border-0',
+    className: 'border-b border-(--ui-stroke-tertiary) py-3 last:border-0',
     children: [
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.05em] text-muted-foreground',
@@ -1109,20 +1101,20 @@ function ConclusionRow({ conclusion }) {
           jsx('span', { className: 'text-primary', children: conclusion.observer_id }),
           jsx(Codicon, { name: 'chevron-right', size: '0.65rem' }),
           jsx('span', { className: 'text-foreground', children: conclusion.observed_id }),
-          jsx('span', {
-            className: 'border border-border/70 bg-muted/20 px-1.5 py-0.5',
+          jsx(Badge, {
+            variant: 'muted',
             children: text(conclusion.level, 'unknown')
           }),
           conclusion.belongs_to_current_session
-            ? jsx('span', { className: 'border border-primary/35 bg-primary/5 px-1.5 py-0.5 text-primary', children: 'CURRENT_SESSION' })
-            : jsx('span', { className: 'border border-border/70 px-1.5 py-0.5', children: 'PEER_WIDE' }),
+            ? jsx(Badge, { variant: 'default', children: 'Current session' })
+            : jsx(Badge, { variant: 'muted', children: 'Peer-wide' }),
           Number.isInteger(conclusion.times_derived)
             ? jsx('span', { children: `${number(conclusion.times_derived)} derivations` })
             : null,
           jsx('span', { className: 'ml-auto tabular-nums', children: formatTime(conclusion.created_at) })
         ]
       }),
-      jsx('p', { className: 'mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-foreground', children: conclusion.content }),
+      jsx('p', { className: 'mt-2 whitespace-pre-wrap text-xs leading-5 text-foreground', style: { maxWidth: '72ch', overflowWrap: 'anywhere' }, children: conclusion.content }),
       conclusion.source_session_id
         ? jsx('div', {
             className: 'mt-2 truncate font-mono text-[10px] text-muted-foreground',
@@ -1164,7 +1156,7 @@ function ConclusionsTab() {
         children: [
           jsxs('div', {
             children: [
-              jsx('div', { className: 'font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground', children: 'MEMORY_SCOPE' }),
+              jsx('div', { className: 'mb-1 text-xs text-(--ui-text-secondary)', children: 'Memory scope' }),
               jsx(ScopeToggle, {
                 value: scope,
                 label: 'Conclusion scope',
@@ -1216,20 +1208,20 @@ function ConclusionsTab() {
 
 function LayerRow({ label, available, detail, tone = 'muted' }) {
   return jsxs('div', {
-    className: 'border border-border/60 bg-background/25 p-3',
+    className: 'py-2',
     children: [
       jsxs('div', {
         className: 'flex items-center gap-2',
         children: [
           jsx(StatusDot, { tone: available ? tone : 'muted' }),
-          jsx('span', { className: 'font-mono text-[10px] uppercase tracking-[0.08em] text-foreground', children: label }),
+          jsx('span', { className: 'text-xs font-medium text-foreground', children: uiLabel(label) }),
           jsx('span', {
-            className: 'ml-auto font-mono text-[10px] uppercase text-muted-foreground',
-            children: available ? 'AVAILABLE' : 'EMPTY'
+            className: 'ml-auto text-xs text-(--ui-text-secondary)',
+            children: available ? 'Available' : 'Empty'
           })
         ]
       }),
-      jsx('p', { className: 'mt-1 text-[11px] leading-4 text-muted-foreground', children: detail })
+      jsx('p', { className: 'mt-1 text-xs leading-5 text-(--ui-text-secondary)', children: detail })
     ]
   })
 }
@@ -1258,7 +1250,7 @@ function ContextTab() {
           jsxs('label', {
             className: 'min-w-40',
             children: [
-              jsx('span', { className: 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground', children: 'TOKEN_BUDGET' }),
+              jsx('span', { className: 'mb-1 block text-xs text-(--ui-text-secondary)', children: 'Token budget' }),
               jsx(Input, {
                 type: 'number',
                 min: 256,
@@ -1266,7 +1258,7 @@ function ContextTab() {
                 step: 256,
                 value: draftBudget,
                 onChange: event => setDraftBudget(Math.max(256, Math.min(32000, Number(event.target.value) || 256))),
-                className: 'h-8 rounded-none bg-background/50 font-mono text-xs tabular-nums'
+                className: 'font-mono tabular-nums'
               })
             ]
           }),
@@ -1279,11 +1271,10 @@ function ContextTab() {
           data?.copy_text
             ? jsx(CopyButton, {
                 appearance: 'button',
-                buttonSize: 'xs',
-                buttonVariant: 'outline',
-                className: 'rounded-none font-mono text-[10px] uppercase tracking-[0.08em]',
+                buttonSize: 'default',
+                buttonVariant: 'secondary',
                 text: data.copy_text,
-                label: 'COPY_CONTEXT',
+                label: 'Copy context',
                 showLabel: true
               })
             : null
@@ -1323,7 +1314,8 @@ function ContextTab() {
                   bodyClassName: 'p-0',
                   children: data.copy_text
                     ? jsx('pre', {
-                        className: 'max-h-[620px] overflow-auto whitespace-pre-wrap break-words p-3 font-sans text-xs leading-5 text-foreground',
+                        className: 'overflow-auto whitespace-pre-wrap font-sans text-xs leading-5 text-foreground',
+                        style: { maxHeight: 620, maxWidth: '72ch', overflowWrap: 'anywhere' },
                         children: data.copy_text
                       })
                     : jsx(EmptyReadout, {
@@ -1340,6 +1332,7 @@ function ContextTab() {
 }
 
 function SearchTab() {
+  const layout = useLayout()
   const focus = useFocusScope()
   const [queryText, setQueryText] = useState('')
   const [scope, setScope] = useState('session')
@@ -1389,8 +1382,9 @@ function SearchTab() {
 
   function submit(event) {
     event.preventDefault()
+    if (event.type === 'submit' && event.nativeEvent.submitter?.name !== 'honcho-search') return
     const cleaned = queryText.trim()
-    if (!cleaned || focus.routeMismatch || (scope === 'honcho' && !scopeId)) return
+    if (!cleaned || focus.routeMismatch || query.isFetching || (scope === 'honcho' && !scopeId)) return
     setRun({ fingerprint: focus.fingerprint, query: cleaned, scope, scopeId, limit })
   }
 
@@ -1402,20 +1396,28 @@ function SearchTab() {
         tone: query.isFetching ? 'warn' : 'good',
         children: jsx('form', {
           onSubmit: submit,
+          // SearchField owns a clear button. Avoid implicit Enter submission
+          // activating that button instead of the explicit search action.
+          onKeyDown: event => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.target.matches('input[type="text"]')) submit(event)
+          },
           className: 'space-y-3',
           children: [
             jsxs('div', {
-              className: 'flex flex-col gap-2 sm:flex-row',
+              className: cn('flex gap-2', layout === 'narrow' && 'flex-col'),
               children: [
-                jsx(Input, {
+                jsx(SearchField, {
                   value: queryText,
-                  onChange: event => setQueryText(event.target.value),
-                  placeholder: 'search Honcho memory…',
-                  disabled: focus.routeMismatch || query.isFetching,
-                  className: 'h-8 flex-1 rounded-none bg-background/50 font-mono text-xs'
+                  onChange: setQueryText,
+                  placeholder: 'Search Honcho memory…',
+                  'aria-label': 'Search Honcho memory',
+                  loading: query.isFetching,
+                  containerClassName: 'flex-1',
+                  inputClassName: 'w-full'
                 }),
                 jsx(ActionButton, {
                   type: 'submit',
+                  name: 'honcho-search',
                   icon: 'search',
                   variant: 'default',
                   disabled: !queryText.trim() || focus.routeMismatch || query.isFetching || (scope === 'honcho' && !scopeId),
@@ -1428,7 +1430,7 @@ function SearchTab() {
               children: [
                 jsxs('div', {
                   children: [
-                    jsx('div', { className: 'mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground', children: 'SEARCH_SCOPE' }),
+                    jsx('div', { className: 'mb-1 text-xs text-(--ui-text-secondary)', children: 'Search scope' }),
                     jsx(ScopeToggle, {
                       value: scope,
                       label: 'Search scope',
@@ -1445,8 +1447,8 @@ function SearchTab() {
                       className: 'min-w-48 flex-1',
                       children: [
                         jsx('span', {
-                          className: 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground',
-                          children: 'EXISTING_HONCHO_SCOPE'
+                          className: 'mb-1 block text-xs text-(--ui-text-secondary)',
+                          children: 'Existing Honcho scope'
                         }),
                         jsxs(Select, {
                           value: scopeId,
@@ -1456,7 +1458,7 @@ function SearchTab() {
                           },
                           children: [
                             jsx(SelectTrigger, {
-                              className: 'h-8 w-full font-mono text-xs',
+                              className: 'w-full',
                               children: jsx(SelectValue, { placeholder: 'Select a scope' })
                             }),
                             jsx(SelectContent, {
@@ -1474,21 +1476,21 @@ function SearchTab() {
                   : null,
                 jsxs('label', {
                   children: [
-                    jsx('span', { className: 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground', children: 'MAX_RESULTS' }),
+                    jsx('span', { className: 'mb-1 block text-xs text-(--ui-text-secondary)', children: 'Max results' }),
                     jsx(Input, {
                       type: 'number',
                       min: 1,
                       max: 100,
                       value: limit,
                       onChange: event => setLimit(Math.max(1, Math.min(100, Number(event.target.value) || 1))),
-                      className: 'h-7 w-24 rounded-none bg-background/50 font-mono text-xs tabular-nums'
+                      className: 'w-24 font-mono tabular-nums'
                     })
                   ]
                 })
               ]
             }),
             jsx('p', {
-              className: 'text-[10px] leading-4 text-muted-foreground',
+              className: 'text-xs leading-5 text-(--ui-text-secondary)',
               children: 'Search is submitted explicitly and preserves Honcho relevance ordering. Results never poll or carry into another focused chat.'
             })
           ]
@@ -1608,17 +1610,24 @@ function ActiveTab() {
 
 function HonchoPage() {
   const snapshot = useHonchoSnapshot()
+  const active = useValue($activeTab)
   return jsx('main', {
     className: 'h-full overflow-y-auto',
     children: jsx(ResponsiveSurface, {
-      className: 'min-h-full space-y-4 px-(--page-gutter-x) py-(--page-gutter-y) font-sans',
+      // Runtime plugins have no Tailwind build. Keep container geometry explicit.
+      className: 'min-h-full font-sans',
+      style: { padding: '20px clamp(20px, 4%, 64px)' },
       children: jsxs('div', {
-        className: 'contents',
+        className: 'flex flex-col gap-4',
         children: [
           jsx(PageHeader, { query: snapshot }),
           jsx(LineageStrip, { focus: snapshot, snapshot }),
           jsx(TabRail, {}),
-          jsx(ActiveTab, {}),
+          jsx('section', {
+            id: 'honcho-section',
+            'aria-label': uiLabel(active),
+            children: jsx(ActiveTab, {})
+          }),
           jsx(AddToSessionDialog, { origin: 'page', snapshot })
         ]
       })
@@ -1631,8 +1640,8 @@ function PaneSection({ title, children }) {
     className: 'border-t border-(--ui-stroke-tertiary) first:border-t-0',
     children: [
       jsx('div', {
-        className: 'px-3 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-(--ui-text-tertiary)',
-        children: `[ ${title} ]`
+        className: 'px-3 py-2 text-xs font-medium text-foreground',
+        children: uiLabel(title)
       }),
       jsx('div', { className: 'px-3 pb-3', children })
     ]
@@ -1690,13 +1699,13 @@ function HonchoMemoryPaneContent() {
         className: 'flex items-center justify-between border-b border-border/70 px-3 py-2',
         children: [
           jsxs('div', {
-            className: 'flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em]',
-            children: [jsx(StatusDot, { tone }), data.ok ? 'FOCUSED_MEMORY' : text(data.state, 'CHECKING').toUpperCase()]
+            className: 'flex items-center gap-2 text-xs font-medium',
+            children: [jsx(StatusDot, { tone }), data.ok ? 'Focused memory' : uiLabel(text(data.state, 'CHECKING').toUpperCase())]
           }),
           jsx(ActionButton, {
             icon: 'refresh',
             size: 'icon-xs',
-            className: 'size-6 p-0',
+            variant: 'ghost',
             'aria-label': 'Refresh Honcho memory',
             disabled: snapshot.isFetching || context.isFetching,
             onClick: () => {
@@ -1781,11 +1790,11 @@ function HonchoMemoryPaneContent() {
             context.data?.copy_text
               ? jsx(CopyButton, {
                   appearance: 'button',
-                  buttonSize: 'xs',
-                  buttonVariant: 'outline',
-                  className: 'justify-start rounded-none font-mono text-[10px] uppercase tracking-[0.08em]',
+                  buttonSize: 'default',
+                  buttonVariant: 'secondary',
+                  className: 'justify-start',
                   text: context.data.copy_text,
-                  label: 'COPY_CONTEXT',
+                  label: 'Copy context',
                   showLabel: true
                 })
               : null

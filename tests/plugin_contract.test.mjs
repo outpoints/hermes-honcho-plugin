@@ -88,14 +88,14 @@ test('implements all cockpit sections and bounded backend endpoints', () => {
   assert.match(source, /currentRun\s*\?\s*\{ scope: currentRun\.scope, scope_id: currentRun\.scopeId \|\| null, query: currentRun\.query, limit: currentRun\.limit \}/)
 })
 
-test('keeps dashboard styling flat, tokenized, dense, and square', () => {
+test('keeps native styling tokenized and free of custom decorative chrome', () => {
   assert.doesNotMatch(source, /#[0-9a-f]{3,8}\b/i)
   assert.doesNotMatch(source, /\brgb\s*\(/i)
   assert.doesNotMatch(source, /rounded-(?:lg|xl|2xl|3xl|full)\b/)
   assert.doesNotMatch(source, /\bshadow-(?:md|lg|xl|2xl)\b/)
   assert.doesNotMatch(source, /bg-gradient|background-clip|backdrop-blur/)
   assert.doesNotMatch(source, /─ □ ×/)
-  assert.match(source, /\[ \$\{title\} \]/)
+
   assert.match(source, /font-mono text-\[10px\]/)
   assert.match(source, /--ui-stroke-tertiary/)
   assert.match(source, /--ui-text-secondary/)
@@ -111,9 +111,9 @@ test('layout follows the rendered pane width instead of global viewport breakpoi
 })
 
 test('narrow layout keeps navigation and primary actions usable without horizontal clipping', () => {
-  assert.match(source, /function TabRail\(\)[\s\S]*?layout === 'narrow'[\s\S]*?SelectTrigger/)
+  assert.match(source, /function TabRail\(\)[\s\S]*?layout !== 'wide'[\s\S]*?SelectTrigger/)
   assert.match(source, /const columns = layout === 'wide' \? 4 : 2/)
-  assert.match(source, /min-h-8/)
+
   assert.match(source, /useValue\(host\.state\.viewport\)/)
   assert.match(source, /viewport\?\.width\s*<\s*640/)
   assert.doesNotMatch(source, /text-\[9px\]/)

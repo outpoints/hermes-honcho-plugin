@@ -139,6 +139,10 @@ Run all static contract and backend unit checks:
 hermes plugins doctor --ci .
 ```
 
+Set `HERMES_PYTHON` when the checks cannot discover the Python interpreter that
+runs Hermes. See the [release verification record](docs/release-readiness.md)
+for tested versions, privacy checks, UI coverage and deployment limitations.
+
 The plugin deliberately has no frontend build step and adds no third-party
 runtime framework. `desktop/plugin.js` uses only the Hermes-provided SDK, React
 runtime, UI components, and shared React Query cache. `dashboard/plugin_api.py`

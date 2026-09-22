@@ -57,6 +57,12 @@ const TABS = ['OVERVIEW', 'MESSAGES', 'CONCLUSIONS', 'CONTEXT', 'SEARCH', 'ACTIV
 const $activeTab = atom('OVERVIEW')
 const $uploadOrigin = atom(null)
 const LayoutContext = createContext('compact')
+// Dense operational labels must remain readable in the host's light theme.
+// Scope these aliases to our surfaces, never alter the application's theme.
+const READABLE_TOKENS = {
+  '--dt-muted-foreground': 'var(--ui-text-secondary)',
+  '--ui-text-tertiary': 'var(--ui-text-secondary)'
+}
 
 let requestPlugin = null
 
@@ -95,7 +101,7 @@ function ResponsiveSurface({ className, style, children }) {
     ref,
     'data-layout': layout,
     className,
-    style,
+    style: { ...READABLE_TOKENS, ...style },
     children: jsx(LayoutContext.Provider, { value: layout, children })
   })
 }
@@ -324,15 +330,19 @@ function AddToSessionDialog({ origin, snapshot }) {
   const [file, setFile] = useState(null)
   const [result, setResult] = useState(null)
   const [focusChanged, setFocusChanged] = useState(false)
+  const [retryBlocked, setRetryBlocked] = useState(false)
   const focusFingerprintRef = useRef(focus.fingerprint)
   const openedFingerprintRef = useRef(uploadRequest?.fingerprint || focus.fingerprint)
   const inputId = `honcho-upload-${origin}`
+  const uploadInFlightRef = useRef(false)
 
   focusFingerprintRef.current = focus.fingerprint
   if (open && uploadRequest?.fingerprint) openedFingerprintRef.current = uploadRequest.fingerprint
 
   const mutation = useMutation({
+    retry: false,
     mutationFn: async () => {
+      uploadInFlightRef.current = true
       if (!requestPlugin) throw new Error('Honcho plugin backend is not registered')
       const confirmedFingerprint = openedFingerprintRef.current
       if (focusFingerprintRef.current !== confirmedFingerprint) throw new Error('The focused conversation changed. Reopen Add to Session and confirm the new target.')
@@ -367,13 +377,27 @@ function AddToSessionDialog({ origin, snapshot }) {
         timeoutMs: 22_000
       })
       if (!ticket?.ok || !ticket.ticket) throw new Error(ticket?.errors?.[0]?.message || 'Honcho could not prepare this upload target.')
+      if (!ticket.target ||
+          ticket.target.workspace_id !== snapshot.data?.config?.workspace_id ||
+          ticket.target.session_id !== snapshot.data?.chat?.honcho_session_id ||
+          ticket.target.peer_id !== snapshot.data?.config?.user_peer) {
+        throw new Error('The Honcho target changed after confirmation. Nothing was sent. Refresh and confirm the new target.')
+      }
       if (focusFingerprintRef.current !== confirmedFingerprint) throw new Error('The focused conversation changed before upload. Nothing was sent.')
 
-      const uploaded = await requestForFocus(focus, `/uploads/${encodeURIComponent(ticket.ticket)}`, {
-        method: 'POST',
-        upload: { filename, contentType, bytes },
-        timeoutMs: 125_000
-      })
+      let uploaded
+      try {
+        uploaded = await requestForFocus(focus, `/uploads/${encodeURIComponent(ticket.ticket)}`, {
+          method: 'POST',
+          upload: { filename, contentType, bytes },
+          timeoutMs: 125_000
+        })
+      } catch {
+        const error = new Error('The upload response was lost. Check the confirmed session’s Messages before retrying. Closing this dialog does not cancel server processing.')
+        error.uploadState = 'outcome_unknown'
+        error.committed = null
+        throw error
+      }
       if (focusFingerprintRef.current !== confirmedFingerprint) {
         const error = new Error('The conversation changed while Honcho was processing the upload. The old session may have received messages; inspect its Messages tab before retrying.')
         error.uploadState = 'focus_changed_after_upload'
@@ -394,6 +418,15 @@ function AddToSessionDialog({ origin, snapshot }) {
     onSuccess: uploaded => {
       setResult(uploaded)
       queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] })
+    },
+    onError: error => {
+      if (error.uploadState && error.committed !== false) {
+        setRetryBlocked(true)
+        queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] })
+      }
+    },
+    onSettled: () => {
+      uploadInFlightRef.current = false
     }
   })
 
@@ -402,22 +435,25 @@ function AddToSessionDialog({ origin, snapshot }) {
   }, [focus.fingerprint, open])
 
   function resetFeedback() {
+    if (mutation.isPending || retryBlocked) return
     setResult(null)
     mutation.reset()
   }
 
   function setOpen(next) {
+    if (mutation.isPending || uploadInFlightRef.current) return
+    setRetryBlocked(false)
+    setResult(null)
+    mutation.reset()
     if (next) {
       openedFingerprintRef.current = focus.fingerprint
       setFocusChanged(false)
-      resetFeedback()
       $uploadOrigin.set({ origin, fingerprint: focus.fingerprint })
     } else {
       $uploadOrigin.set(null)
       setFile(null)
       setDraft('')
       setFocusChanged(false)
-      resetFeedback()
     }
   }
 
@@ -439,6 +475,10 @@ function AddToSessionDialog({ origin, snapshot }) {
     onOpenChange: setOpen,
     children: jsxs(DialogContent, {
       className: 'max-h-[88vh] overflow-y-auto sm:max-w-xl',
+      style: READABLE_TOKENS,
+      showCloseButton: !mutation.isPending,
+      onEscapeKeyDown: event => { if (uploadInFlightRef.current) event.preventDefault() },
+      onInteractOutside: event => { if (uploadInFlightRef.current) event.preventDefault() },
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -454,7 +494,9 @@ function AddToSessionDialog({ origin, snapshot }) {
           children: [
             jsx(SegmentedControl, {
               value: mode,
+              disabled: mutation.isPending || retryBlocked,
               onChange: next => {
+                if (mutation.isPending || retryBlocked) return
                 setMode(next)
                 resetFeedback()
               },
@@ -465,6 +507,7 @@ function AddToSessionDialog({ origin, snapshot }) {
             }),
             mode === 'text'
               ? jsx(Textarea, {
+                  disabled: mutation.isPending || retryBlocked,
                   value: draft,
                   onChange: event => {
                     setDraft(event.target.value)
@@ -481,6 +524,7 @@ function AddToSessionDialog({ origin, snapshot }) {
                     jsx('input', {
                       id: inputId,
                       type: 'file',
+                      disabled: mutation.isPending || retryBlocked,
                       accept: '.pdf,.json,.txt,.md,.markdown,.csv,.log,.py,.js,.jsx,.ts,.tsx,.yaml,.yml,.toml,.xml,.html,.css,.sh,.jsonl,application/pdf,application/json,text/*',
                       className: 'sr-only',
                       onChange: event => {
@@ -491,6 +535,7 @@ function AddToSessionDialog({ origin, snapshot }) {
                     jsx(ActionButton, {
                       type: 'button',
                       icon: 'folder-opened',
+                      disabled: mutation.isPending || retryBlocked,
                       onClick: () => document.getElementById(inputId)?.click(),
                       children: file ? 'CHOOSE_ANOTHER_FILE' : 'CHOOSE_FILE'
                     }),
@@ -529,7 +574,7 @@ function AddToSessionDialog({ origin, snapshot }) {
               : null,
             error
               ? jsx(StateLine, {
-                  tone: error?.committed === true || error?.uploadState === 'focus_changed_after_upload' ? 'warn' : 'bad',
+                  tone: retryBlocked ? 'warn' : 'bad',
                   title: errorTitle,
                   children: error.message
                 })
@@ -540,7 +585,7 @@ function AddToSessionDialog({ origin, snapshot }) {
                   title: 'MESSAGES_CREATED',
                   children: jsxs('div', {
                     children: [
-                      jsx('p', { children: `${number(result.created_count, '0')} message records were created and read back from ${text(result.target?.session_id)}.` }),
+                      jsx('p', { children: `${number(result.created_count, '0')} message records were created and read back from ${text(result.target?.session_id || result.ticket?.target?.session_id)}.` }),
                       jsx('div', {
                         className: 'mt-1 break-words font-mono text-[10px] text-(--ui-text-tertiary)',
                         children: result.created?.map(message => message.id).join(' · ')
@@ -553,14 +598,18 @@ function AddToSessionDialog({ origin, snapshot }) {
         }),
         jsxs(DialogFooter, {
           children: [
-            jsx(ActionButton, { type: 'button', onClick: () => setOpen(false), children: result ? 'DONE' : 'CANCEL' }),
+            jsx(ActionButton, { type: 'button', disabled: mutation.isPending, onClick: () => setOpen(false), children: result || retryBlocked ? 'CLOSE' : 'CANCEL' }),
             !result
               ? jsx(ActionButton, {
                   type: 'button',
                   variant: 'default',
                   icon: 'cloud-upload',
-                  disabled: mutation.isPending || !hasContent || !supported || !targetReady || focusChanged,
-                  onClick: () => mutation.mutate(),
+                  disabled: mutation.isPending || retryBlocked || !hasContent || !supported || !targetReady || focusChanged,
+                  onClick: () => {
+                    if (uploadInFlightRef.current) return
+                    uploadInFlightRef.current = true
+                    mutation.mutate()
+                  },
                   children: mutation.isPending ? 'ADDING…' : 'ADD_TO_SESSION'
                 })
               : null
@@ -605,6 +654,7 @@ function ConsolePanel({ title, tone, actions, children, bodyClassName }) {
 
 function StateLine({ tone = 'muted', title, children }) {
   return jsxs('div', {
+    role: tone === 'bad' ? 'alert' : 'status',
     className: cn(
       'flex items-start gap-2 py-2',
       tone === 'bad' && 'text-destructive'
@@ -669,6 +719,12 @@ function QueryState({ query, title, children }) {
           ]
         })
       })
+    })
+  }
+  if (query.data?.errors?.length) {
+    return jsxs('div', {
+      className: 'space-y-3',
+      children: [jsx(Diagnostics, { errors: query.data.errors }), children]
     })
   }
   return children
@@ -809,6 +865,7 @@ function TabRail() {
 }
 
 function PageHeader({ query }) {
+  const queryClient = useQueryClient()
   const tone = stateTone(query.data, query.isError)
   const layout = useLayout()
   const canUpload = Boolean(query.data?.ok && query.data?.chat?.found && !query.routeMismatch)
@@ -826,7 +883,7 @@ function PageHeader({ query }) {
               }),
               jsxs(Badge, {
                 variant: tone === 'bad' ? 'destructive' : tone === 'warn' ? 'warn' : 'muted',
-                children: [jsx(StatusDot, { tone }), query.isError ? 'Unavailable' : query.data?.ok ? 'Live' : uiLabel(text(query.data?.state, 'CHECKING').toUpperCase())]
+                children: [jsx(StatusDot, { tone }), query.isError ? 'Unavailable' : query.data?.ok && query.data?.errors?.length ? 'Partial' : query.data?.ok ? 'Live' : uiLabel(text(query.data?.state, 'CHECKING').toUpperCase())]
               })
             ]
           }),
@@ -853,7 +910,10 @@ function PageHeader({ query }) {
             icon: 'refresh',
             className: layout === 'narrow' ? 'justify-center' : null,
             disabled: query.isFetching || query.routeMismatch,
-            onClick: () => query.refetch(),
+            onClick: () => queryClient.invalidateQueries({
+              predicate: candidate => candidate.queryKey[0] === PLUGIN_ID &&
+                query.key.every((part, index) => candidate.queryKey[index + 2] === part)
+            }),
             children: query.isFetching ? 'REFRESHING…' : 'REFRESH'
           })
         ]
@@ -1412,7 +1472,7 @@ function SearchTab() {
                   placeholder: 'Search Honcho memory…',
                   'aria-label': 'Search Honcho memory',
                   loading: query.isFetching,
-                  containerClassName: 'flex-1',
+                  containerClassName: 'flex-1 opacity-100',
                   inputClassName: 'w-full'
                 }),
                 jsx(ActionButton, {
@@ -1841,6 +1901,7 @@ function HonchoStatusChip() {
     label: tip,
     children: jsxs('button', {
       type: 'button',
+      'aria-label': label,
       onClick: () => host.navigate(ROUTE),
       className: cn(
         'inline-flex h-full items-center gap-1.5 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',

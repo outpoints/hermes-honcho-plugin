@@ -63,6 +63,8 @@ class SDKCompatibilityTests(unittest.TestCase):
         body = json.loads(request.content) if request.headers.get("content-type", "").startswith("application/json") and request.content else None
         self.calls.append((request.method, path, dict(request.url.params), body))
         if path in self.failures:
+            if isinstance(self.failures[path], Exception):
+                raise self.failures[path]
             return httpx.Response(self.failures[path], json={"message": "Synthetic service failure"})
 
         def response(value):
@@ -243,3 +245,27 @@ class SDKCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["created_count"], 2)
         self.assertEqual([item["id"] for item in result["created"]], ["message-fixture", "message-second"])
         self.assertEqual([call[1] for call in self.calls[-2:]], [f"{SESSION_ROOT}/messages/message-fixture", f"{SESSION_ROOT}/messages/message-second"])
+
+    def test_sdk_default_retry_policy_does_not_replay_ambiguous_uploads(self):
+        # Use the real SDK's default retry policy, not the zero-retry fixture.
+        self.client = Honcho(
+            base_url="http://honcho.invalid", environment="local", api_key="fixture-only",
+            workspace_id=WORKSPACE, http_client=self.http,
+        )
+        path = f"{SESSION_ROOT}/messages/upload"
+        for failure in (503, httpx.ReadTimeout("Synthetic lost response")):
+            with self.subTest(failure=type(failure).__name__):
+                self.calls.clear()
+                self.failures[path] = failure
+                tickets = []
+                request = plugin_api.UploadTicketRequest(
+                    stored_session_id="fixture-hermes", filename="fixture.txt",
+                    content_type="text/plain", size=len(b"fixture upload"), source_kind="file",
+                )
+                deps = dict(config_factory=lambda: self.config, client_factory=lambda _: self.client, session_metadata_loader=lambda _: {})
+                prepared = plugin_api._collect_upload_ticket(request, **deps, ticket_store=lambda ticket: (tickets.append(ticket), "fixture-ticket")[1])
+                self.assertEqual(prepared["state"], "ready")
+                result = plugin_api._collect_upload(tickets[0], filename="fixture.txt", content_type="text/plain", content=b"fixture upload", **deps)
+                self.assertEqual(result["state"], "outcome_unknown")
+                self.assertIsNone(result["committed"])
+                self.assertEqual(sum(call[1] == path for call in self.calls), 1)

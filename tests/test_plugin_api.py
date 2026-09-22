@@ -53,7 +53,7 @@ class FakeConclusions:
         )
         item = SimpleNamespace(
             id="conclusion-1",
-            content="human prefers precise operational surfaces.",
+            content="The fixture user prefers concise output.",
             observer_id=self.observer_id,
             observed_id=self.observed_id,
             session_id="hermes-honcho-plugin",
@@ -77,16 +77,16 @@ class FakePeer:
 
     def context(self, target=None):
         self.context_calls.append(target)
-        return "Peer-wide context for human."
+        return "Peer-wide fixture context."
 
     def representation(self, session=None, target=None, max_conclusions=None) -> str:
         self.representation_calls.append(
             {"session": session, "target": target, "max_conclusions": max_conclusions}
         )
-        return "Current-session representation for human."
+        return "Current-session fixture representation."
 
     def card(self):
-        return ["human prefers precise operational surfaces."]
+        return ["The fixture user prefers concise output."]
 
     def search(self, query, limit=10):
         self.search_call = {"query": query, "limit": limit}
@@ -146,6 +146,7 @@ class FakeSession:
             id="message-1",
             content="A bounded context message.",
             peer_id="human",
+            session_id=self.id,
             created_at=dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc),
             token_count=6,
             metadata={},
@@ -688,13 +689,13 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["token_budget"], 2048)
         self.assertEqual(result["session"]["token_count"], 23)
         self.assertEqual(result["session"]["summary"], "Current Honcho session summary.")
-        self.assertEqual(result["peer_context"], "Peer-wide context for human.")
+        self.assertEqual(result["peer_context"], "Peer-wide fixture context.")
         self.assertEqual(
             result["session_representation"],
-            "Current-session representation for human.",
+            "Current-session fixture representation.",
         )
         self.assertEqual(
-            result["peer_card"], ["human prefers precise operational surfaces."]
+            result["peer_card"], ["The fixture user prefers concise output."]
         )
         self.assertGreater(result["character_count"], 0)
         self.assertGreater(result["token_estimate"], 0)
@@ -749,8 +750,8 @@ class ContextTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["preview"], "Peer-wide context for human.")
-        self.assertIn("Peer-wide context for human.", result["copy_text"])
+        self.assertEqual(result["preview"], "Peer-wide fixture context.")
+        self.assertIn("Peer-wide fixture context.", result["copy_text"])
         self.assertGreater(result["character_count"], 0)
 
 
@@ -878,8 +879,11 @@ class UploadTicketTests(unittest.TestCase):
 
     def test_ticket_rejects_unsupported_content_before_storage(self):
         class UploadCapableSession(FakeSession):
-            upload_file = lambda *args, **kwargs: []
-            get_message = lambda *args, **kwargs: None
+            def upload_file(self, *args, **kwargs):
+                return []
+
+            def get_message(self, *args, **kwargs):
+                return None
 
         stored = []
         request = plugin_api.UploadTicketRequest(

@@ -19,8 +19,7 @@ server responses.
 | 2.4.0 | Supported | Paginated non-creating lookup | Null when absent in SDK |
 | 2.5.0 | Supported | Exact non-creating `get_scope` | Parent IDs and derivation counts |
 
-The SDK matrix covers 58 Python tests. The JavaScript suite now has 18 tests,
-including local multiplexed read and upload routing regressions.
+The suites include local multiplexed read and upload routing regressions.
 The matrix tests cover:
 
 - Workspace, session and peer discovery without get-or-create writes.
@@ -96,11 +95,10 @@ The backend's profile mismatch, plugin enablement, and upload ownership guards
 remain unchanged. No Hermes source patch or SDK upgrade is needed.
 
 Read-only checks through the plugin's ASGI router, real Hermes profile scopes,
-and installed SDK 2.2.0 returned connected snapshots for `default`,
-`research-growth`, `research-engineering`, and `research`. Saved-session messages,
-conclusions, context, and activity succeeded for default, growth, and research.
-The newest engineering Desktop session returned `session_missing`, not a routing
-failure. Named scopes returned `unsupported_sdk` where a session was available.
+and installed SDK 2.2.0 returned connected snapshots for the default profile
+and multiple named profiles. Saved-session reads succeeded where a mapped
+Honcho session existed. An unsaved session returned `session_missing`, not a
+routing failure. Named scopes returned `unsupported_sdk` where a session was available.
 These probes did not write Honcho records and do not verify the running
 Desktop renderer has reloaded the edited plugin. Reload desktop plugins in the
 command palette if the installed symlink's file watcher has not picked it up.

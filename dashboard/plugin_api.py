@@ -10,7 +10,6 @@ import re
 import secrets
 import threading
 import time
-from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 
@@ -167,6 +166,8 @@ def _safe_endpoint(base_url: str | None, environment: str) -> str:
     try:
         parsed = urlsplit(base_url)
         host = parsed.hostname or "custom endpoint"
+        if ":" in host:
+            host = f"[{host}]"
         if parsed.port:
             host = f"{host}:{parsed.port}"
         path = parsed.path.rstrip("/")
@@ -175,7 +176,10 @@ def _safe_endpoint(base_url: str | None, environment: str) -> str:
         return "custom endpoint"
 
 
-_BEARER_RE = re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+")
+_BEARER_RE = re.compile(r"(?i)(?:bearer|basic)\s+[a-z0-9._~+/=-]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r'''(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)'''
+)
 _SECRET_QUERY_RE = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|token|secret)=([^&\s]+)"
 )
@@ -192,6 +196,7 @@ def _redact_text(value: str, *, limit: int) -> str:
     message = _BEARER_RE.sub("Bearer [redacted]", message)
     message = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=[redacted]", message)
     message = _URL_USERINFO_RE.sub(r"\1[redacted]@", message)
+    message = _SECRET_ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}[redacted]", message)
     return message[:limit]
 
 
@@ -223,10 +228,7 @@ def _safe_error(exc: BaseException) -> str:
     """Bound and redact SDK/network errors before returning them to the UI."""
 
     message = str(exc).replace("\n", " ").replace("\r", " ")
-    message = _BEARER_RE.sub("Bearer [redacted]", message)
-    message = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=[redacted]", message)
-    message = _URL_USERINFO_RE.sub(r"\1[redacted]@", message)
-    return message[:240] or exc.__class__.__name__
+    return _redact_text(message, limit=240) or exc.__class__.__name__
 
 
 def _queue_payload(status: Any) -> dict[str, int]:
@@ -403,6 +405,19 @@ def _is_route_mismatch(request: SnapshotRequest) -> bool:
     )
 
 
+def _existing_session(client: Any, session_id: str) -> Any | None:
+    """Never trust server-side filtering as proof of an exact session match."""
+    page = client.sessions(filters={"id": session_id}, page=1, size=1)
+    items = getattr(page, "items", None)
+    if not isinstance(items, list):
+        raise RuntimeError("Honcho returned a malformed session list response.")
+    if not items:
+        return None
+    if len(items) != 1 or getattr(items[0], "id", None) != session_id:
+        raise RuntimeError("Honcho returned a session that did not match the requested ID.")
+    return items[0]
+
+
 def _resolve_focused_session(
     request: SnapshotRequest,
     *,
@@ -446,13 +461,7 @@ def _resolve_focused_session(
         )
         return None
 
-    matching = client.sessions(
-        filters={"id": honcho_session_id}, page=1, size=1
-    )
-    items = getattr(matching, "items", None)
-    if not isinstance(items, list):
-        raise RuntimeError("Honcho returned a malformed session list response.")
-    current_session = items[0] if items else None
+    current_session = _existing_session(client, honcho_session_id)
     result["found"] = current_session is not None
     if current_session is None:
         result["state"] = "session_missing"
@@ -665,7 +674,7 @@ def _collect_upload(
     session_metadata_loader: Callable[[str | None], dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     request = UploadTicketRequest.model_validate(ticket["request"])
-    result, _config, _client, current_session = _prepare_read(
+    result, config, _client, current_session = _prepare_read(
         request,
         config_factory=config_factory,
         client_factory=client_factory,
@@ -681,6 +690,12 @@ def _collect_upload(
                 "content_type": content_type,
                 "size": len(content),
                 "source_kind": ticket.get("source_kind"),
+            },
+            "verified_count": 0,
+            "target": {
+                "workspace_id": ticket.get("workspace_id"),
+                "session_id": ticket.get("session_id"),
+                "peer_id": ticket.get("peer_id"),
             },
         }
     )
@@ -698,7 +713,7 @@ def _collect_upload(
     actual = (
         result.get("workspace_id"),
         result.get("session_id"),
-        ticket.get("peer_id"),
+        _clean(getattr(config, "peer_name", None)),
         filename,
         content_type,
         len(content),
@@ -725,6 +740,8 @@ def _collect_upload(
         return result
 
     try:
+        # A lost response is not evidence of a failed non-idempotent write.
+        result["committed"] = None
         uploaded = current_session.upload_file(
             file=(filename, content, content_type),
             peer=peer_id,
@@ -736,8 +753,8 @@ def _collect_upload(
         if not isinstance(uploaded, list) or not uploaded:
             raise RuntimeError("Honcho returned no created messages for the upload.")
         result["committed"] = True
+        result["created_count"] = len(uploaded)
 
-        verified = []
         for created in uploaded:
             message_id = str(getattr(created, "id", ""))
             if not message_id:
@@ -749,19 +766,21 @@ def _collect_upload(
                 or str(getattr(readback, "peer_id", "")) != peer_id
             ):
                 raise RuntimeError("Created message readback did not match the confirmed session and peer.")
-            verified.append(_message_payload(readback))
+            result["created"].append(_message_payload(readback))
+            result["verified_count"] = len(result["created"])
         result.update(
             {
                 "ok": True,
                 "state": "verified",
-                "created_count": len(verified),
-                "created": verified,
             }
         )
     except Exception as exc:
         result["ok"] = False
-        result["state"] = "verification_failed" if result["committed"] else "upload_failed"
-        result["errors"].append({"scope": "upload", "message": _safe_error(exc)})
+        result["state"] = "verification_failed" if result["committed"] else "outcome_unknown"
+        result["errors"].append({
+            "scope": "upload",
+            "message": f"{_safe_error(exc)} Check this session's Messages before retrying.",
+        })
     return result
 
 
@@ -1646,17 +1665,11 @@ def _collect_snapshot(
             result["errors"].append({"scope": scope, "message": _safe_error(exc)})
             return None
 
-    sessions_page = read("sessions", lambda: client.sessions(page=1, size=1))
-    if sessions_page is not None:
-        result["totals"]["sessions"] = sessions_page.total
-
-    peers_page = read("peers", lambda: client.peers(page=1, size=1))
-    if peers_page is not None:
-        result["totals"]["peers"] = peers_page.total
-
-    workspace_queue = read("queue", client.queue_status)
-    if workspace_queue is not None:
-        result["queue"] = _queue_payload(workspace_queue)
+    # Decode inside each guarded read too. A malformed metric must not discard
+    # all the independently successful reads.
+    result["totals"]["sessions"] = read("sessions", lambda: client.sessions(page=1, size=1).total)
+    result["totals"]["peers"] = read("peers", lambda: client.peers(page=1, size=1).total)
+    result["queue"] = read("queue", lambda: _queue_payload(client.queue_status()))
 
     session_id = _clean(request.stored_session_id) or _clean(request.runtime_session_id)
     metadata_loader = session_metadata_loader or _load_hermes_session_metadata
@@ -1690,53 +1703,50 @@ def _collect_snapshot(
 
     current_session = None
     if honcho_session_id:
-        matching = read(
+        current_session = read(
             "current_session",
-            lambda: client.sessions(
-                filters={"id": honcho_session_id}, page=1, size=1
-            ),
+            lambda: _existing_session(client, honcho_session_id),
         )
-        if matching is not None:
-            current_session = matching.items[0] if matching.items else None
-            result["chat"]["found"] = current_session is not None
+        result["chat"]["found"] = current_session is not None
 
     if current_session is not None:
-        messages = read(
-            "current_session.messages",
-            lambda: current_session.messages(page=1, size=1, reverse=True),
-        )
-        if messages is not None:
-            result["chat"]["messages"] = messages.total
-            if messages.items:
-                latest = messages.items[0]
-                result["chat"]["latest_message_at"] = _iso(latest.created_at)
-                result["chat"]["latest_peer_id"] = latest.peer_id
+        def latest_messages() -> dict[str, Any]:
+            page = current_session.messages(page=1, size=1, reverse=True)
+            latest = page.items[0] if page.items else None
+            return {
+                "messages": page.total,
+                "latest_message_at": _iso(latest.created_at) if latest else None,
+                "latest_peer_id": latest.peer_id if latest else None,
+            }
 
-        session_peers = read("current_session.peers", current_session.peers)
+        messages = read("current_session.messages", latest_messages)
+        if messages is not None:
+            result["chat"].update(messages)
+
+        session_peers = read("current_session.peers", lambda: {
+            str(peer.id): peer for peer in current_session.peers()
+        })
         if session_peers is not None:
-            peer_ids = sorted({peer.id for peer in session_peers})
-            result["chat"]["peers"] = peer_ids
+            result["chat"]["peers"] = sorted(session_peers)
 
             if config.peer_name:
-                observer = next(
-                    (peer for peer in session_peers if peer.id == config.ai_peer), None
-                )
+                observer = session_peers.get(config.ai_peer)
                 if observer is not None:
                     conclusions = read(
                         "conclusions",
                         lambda: observer.conclusions_of(config.peer_name).list(
                             page=1, size=1
-                        ),
+                        ).total,
                     )
                     if conclusions is not None:
-                        result["totals"]["conclusions"] = conclusions.total
+                        result["totals"]["conclusions"] = conclusions
 
-        session_queue = read("current_session.queue", current_session.queue_status)
-        if session_queue is not None:
-            result["chat"]["queue"] = _queue_payload(session_queue)
+        result["chat"]["queue"] = read(
+            "current_session.queue", lambda: _queue_payload(current_session.queue_status())
+        )
 
     result["ok"] = successful_reads > 0
-    result["state"] = "connected" if result["ok"] else "unreachable"
+    result["state"] = ("partial" if result["errors"] else "connected") if result["ok"] else "unreachable"
     result["latency_ms"] = round((time.monotonic() - started) * 1000)
     return result
 
@@ -1896,6 +1906,7 @@ async def upload(
 
     payload = _take_upload_ticket(ticket)
     if payload is None:
+        await file.close()
         return {
             "ok": False,
             "state": "ticket_expired",
@@ -1914,7 +1925,14 @@ async def upload(
     filename = str(file.filename or "file")
     content_type = str(file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
     try:
-        content = await file.read()
+        content = await file.read(request.size + 1)
+        if len(content) != request.size:
+            result = _failure_payload(
+                request, state="ticket_mismatch", scope="upload.ticket",
+                message="The uploaded file size does not match the confirmed selection.", latency_ms=0,
+            )
+            result.update({"committed": False, "created_count": 0, "created": []})
+            return result
         return await asyncio.wait_for(
             asyncio.to_thread(
                 _collect_in_profile,

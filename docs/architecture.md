@@ -76,14 +76,23 @@ Confirmed ingestion adds a separate mutation phase:
    peer, capability-checks `Session.upload_file`, and returns a random one-time
    ticket with a two-minute lifetime. It does not create a workspace, session,
    peer, or scope.
-3. Desktop verifies that focus has not changed, then sends the bytes through
-   Hermes's authenticated multipart `ctx.rest()` transport.
+3. Desktop verifies that focus has not changed and the ticket's workspace,
+   session and peer still match the displayed confirmation. It then sends the
+   bytes through Hermes's authenticated multipart `ctx.rest()` transport.
 4. The backend consumes the ticket before invoking Honcho so it cannot be
    replayed, uploads to the ticket-bound session/peer, and reads every returned
    message ID back through `Session.get_message`.
-5. A timeout is reported as an unknown outcome rather than a clean failure,
-   because a synchronous SDK call may finish after the local timeout. The UI
-   does not automatically retry ambiguous writes.
+5. A timeout, transport loss or malformed receipt is reported as an unknown
+   outcome rather than a clean failure. A synchronous SDK call may finish after
+   the local timeout. The UI disables retries after ambiguous writes and prevents
+   dismissal or duplicate submission while the upload is pending. A failed
+   readback preserves the messages already verified, without claiming success.
+
+Tickets are process-local. Run the companion in the normal single-process Hermes
+backend, or keep ticket creation and upload on the same worker. A backend restart
+invalidates outstanding tickets. The API reads at most the confirmed byte count
+plus one from the multipart file and rejects mismatched sizes before contacting
+Honcho. Host multipart parsing and deployment-level request limits still apply.
 
 The dashboard manifest is hidden and its small JavaScript entry registers a
 null component. Hermes's web dashboard loads enabled manifests to mount their

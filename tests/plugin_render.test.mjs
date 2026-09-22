@@ -34,6 +34,9 @@ const conclusion = {
   belongs_to_current_session: true, created_at: '2026-01-01T00:00:00Z',
 }
 
+const uploadTarget = { workspace_id: 'fixture-workspace', session_id: 'fixture-session', peer_id: 'fixture-user' }
+const uploadSnapshot = { data: { ok: true, chat: { found: true, honcho_session_id: 'fixture-session' }, config: { workspace_id: 'fixture-workspace', user_peer: 'fixture-user' } } }
+
 test('conclusion rows distinguish parent conclusions from source messages', () => {
   const modern = renderedText(sandbox.ConclusionRow({ conclusion: {
     ...conclusion, source_ids: ['premise-a', 'premise-b'], times_derived: 7,
@@ -78,7 +81,7 @@ test('upload ticket and multipart submission retain the same local profile', asy
   const calls = []
   sandbox.transport = async (path, options) => {
     calls.push({ path, options })
-    return path.startsWith('/upload-ticket') ? { ok: true, ticket: 'fixture-ticket' } : { ok: true }
+    return path.startsWith('/upload-ticket') ? { ok: true, ticket: 'fixture-ticket', target: uploadTarget } : { ok: true }
   }
   vm.runInContext('requestPlugin = transport', sandbox)
   sandbox.TextEncoder = TextEncoder
@@ -97,7 +100,7 @@ test('upload ticket and multipart submission retain the same local profile', asy
   }
   sandbox.host = { state: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { get: () => value }])) }
   for (const name of ['Dialog', 'DialogContent', 'DialogHeader', 'DialogTitle', 'DialogDescription', 'DialogFooter', 'SegmentedControl', 'Textarea']) sandbox[name] = name
-  sandbox.AddToSessionDialog({ origin: 'test', snapshot: { data: { ok: true, chat: { found: true } } } })
+  sandbox.AddToSessionDialog({ origin: 'test', snapshot: uploadSnapshot })
   await mutation.mutationFn()
   assert.deepEqual(calls.map(call => call.path), [
     '/upload-ticket?profile=research', '/uploads/fixture-ticket?profile=research',
@@ -164,4 +167,98 @@ test('search submits on Enter or its named action, never on Clear or IME composi
   form.props.onSubmit(event('submit', { nativeEvent: { submitter: { name: 'honcho-search' } } }))
   assert.equal(recorded.length, 2)
   assert.ok(recorded.every(run => run.query === 'ownership' && run.scope === 'session'))
+})
+
+test('page refresh invalidates visible reads only for the current focus', () => {
+  const calls = []
+  sandbox.useQueryClient = () => ({ invalidateQueries: filter => calls.push(filter) })
+  sandbox.useContext = () => 'wide'
+  sandbox.StatusDot = 'StatusDot'
+  const focusKey = ['default', 'local', 'default', 'local', 'session', 'runtime', '/fixture']
+  const tree = sandbox.PageHeader({ query: { key: focusKey, data: { ok: true }, refetch() {} } })
+  const refresh = tree.props.children[1].props.children[1]
+  refresh.props.onClick()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].predicate({ queryKey: ['hermes-honcho-plugin', '/messages', ...focusKey, 1] }), true)
+  assert.equal(calls[0].predicate({ queryKey: ['hermes-honcho-plugin', '/messages', 'research'] }), false)
+  assert.equal(calls[0].predicate({ queryKey: ['other-plugin', '/messages', ...focusKey] }), false)
+})
+
+test('partial endpoint results display diagnostics without discarding readable content', () => {
+  const child = element('p', { children: 'Available fixture content' })
+  const tree = sandbox.QueryState({ query: { data: { ok: true, errors: [{ scope: 'fixture', message: 'One layer unavailable' }] } }, title: 'CONTEXT', children: child })
+  assert.notEqual(tree, child)
+  assert.ok(tree.props.children.includes(child))
+  assert.ok(tree.props.children.some(node => node?.type === sandbox.Diagnostics))
+})
+
+function prepareUploadDialog(transport, mutationState = {}) {
+  for (const name of ['Dialog', 'DialogContent', 'DialogHeader', 'DialogTitle', 'DialogDescription', 'DialogFooter', 'SegmentedControl', 'Textarea']) sandbox[name] = name
+  sandbox.transport = transport
+  vm.runInContext('requestPlugin = transport', sandbox)
+  sandbox.TextEncoder = TextEncoder
+  sandbox.useValue = atom => atom.get()
+  sandbox.useQueryClient = () => ({ invalidateQueries() {} })
+  sandbox.useRef = current => ({ current })
+  sandbox.useEffect = () => {}
+  let stateIndex = 0
+  sandbox.useState = initial => [stateIndex++ === 1 ? 'Fixture upload' : initial, () => {}]
+  let mutation
+  sandbox.useMutation = options => { mutation = options; return { reset() {}, ...mutationState } }
+  const values = {
+    profile: 'default', focusedSessionProfile: 'default', connectionId: 'local',
+    focusedSessionOwner: { connectionId: 'local' }, focusedSessionId: 'fixture-session',
+    focusedStoredSessionId: 'fixture-session', cwd: '/fixture', busy: false, awaitingResponse: false,
+  }
+  sandbox.host = { state: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { get: () => value }])) }
+  const tree = sandbox.AddToSessionDialog({ origin: 'test', snapshot: uploadSnapshot })
+  return { tree, mutation }
+}
+
+test('upload transport loss is unknown, with retries explicitly disabled', async () => {
+  const { mutation } = prepareUploadDialog(async path => {
+    if (path.startsWith('/upload-ticket')) return { ok: true, ticket: 'fixture-ticket', target: uploadTarget }
+    throw new Error('Fixture connection lost')
+  })
+  assert.equal(mutation.retry, false)
+  await assert.rejects(mutation.mutationFn(), error => {
+    assert.equal(error.uploadState, 'outcome_unknown')
+    assert.equal(error.committed, null)
+    assert.match(error.message, /Messages.*before retrying/)
+    return true
+  })
+})
+
+test('pending upload cannot be dismissed or reset', () => {
+  let resets = 0
+  const { tree } = prepareUploadDialog(async () => ({}), { isPending: true, reset() { resets++ } })
+  tree.props.onOpenChange(false)
+  assert.equal(resets, 0, 'closing must not erase the in-flight submission guard')
+})
+
+test('upload dismissal guard takes effect before React Query rerenders', async () => {
+  let resets = 0
+  let release
+  const waiting = new Promise(resolve => { release = resolve })
+  const { tree, mutation } = prepareUploadDialog(async path => {
+    if (path.startsWith('/upload-ticket')) return { ok: true, ticket: 'fixture-ticket', target: uploadTarget }
+    return waiting
+  }, { isPending: false, reset() { resets++ } })
+  const pending = mutation.mutationFn()
+  tree.props.onOpenChange(false)
+  release({ ok: true })
+  await pending
+  assert.equal(resets, 0)
+})
+
+test('ticket must match the session and peer shown when the user confirmed', async () => {
+  for (const field of ['workspace_id', 'session_id', 'peer_id']) {
+    const calls = []
+    const { mutation } = prepareUploadDialog(async path => {
+      calls.push(path)
+      return { ok: true, ticket: 'fixture-ticket', target: { ...uploadTarget, [field]: 'changed-target' } }
+    })
+    await assert.rejects(mutation.mutationFn(), /target changed/)
+    assert.equal(calls.length, 1, 'mismatched ticket must not dispatch file content')
+  }
 })

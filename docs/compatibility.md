@@ -90,7 +90,9 @@ Some Desktop builds mark shared local backends `sharedPrimary`, but their
 registry REST dispatcher adds a profile query only for `sharedRemote`.
 The plugin explicitly supplies `?profile=<selected-profile>` for local
 `ctx.rest()` requests, including upload-ticket creation and multipart upload.
-Remote routing remains owned by Hermes so SSH aliases are not reinterpreted.
+For remote requests, the plugin obtains `targetProfile` from Hermes's public
+`host.profileRoutes()` API and uses that same value in the URL and body
+provenance. It never infers a target from an alias or opens its own tunnel.
 The backend's profile mismatch, plugin enablement, and upload ownership guards
 remain unchanged. No Hermes source patch or SDK upgrade is needed.
 

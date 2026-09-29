@@ -62,10 +62,7 @@ test('local multiplexed requests carry their profile in the URL, not just the bo
   sandbox.useQuery = options => options
   vm.runInContext('requestPlugin = transport', sandbox)
   for (const profile of ['default', 'research']) {
-    const focus = {
-      activeProfile: profile, connectionId: 'local', routeMismatch: false,
-      key: [profile, 'local'], body: { profile, focused_profile: profile },
-    }
+    const focus = setLiveFocus({ profile, focusedSessionProfile: profile, connectionId: 'local', focusedSessionOwner: { connectionId: 'local', profile } })
     for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/context', '/search', '/scopes', '/activity']) {
       await sandbox.useEndpointForFocus(focus, endpoint).queryFn()
       const call = calls.at(-1)
@@ -113,11 +110,110 @@ test('remote routing stays host-owned and mismatched focus cannot dispatch', asy
   const calls = []
   sandbox.transport = async path => calls.push(path)
   vm.runInContext('requestPlugin = transport', sandbox)
-  const focus = { activeProfile: 'remote-alias', connectionId: 'fixture-ssh', routeMismatch: false }
+  const focus = setLiveFocus()
+  sandbox.host.profileRoutes = async () => [{ connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' }]
+  sandbox.queryClient = { fetchQuery: options => options.queryFn() }
   await sandbox.requestForFocus(focus, '/snapshot', {})
-  assert.deepEqual(calls, ['/snapshot'])
-  assert.throws(() => sandbox.requestForFocus({ ...focus, routeMismatch: true }, '/snapshot', {}), /does not match/)
+  assert.deepEqual(calls, ['/snapshot?profile=research'])
+  await assert.rejects(sandbox.requestForFocus({ ...focus, routeMismatch: true }, '/snapshot', {}), /does not match/)
   assert.equal(calls.length, 1)
+})
+
+test('SSH aliases translate provenance for every read, ticket and multipart call', async () => {
+  const calls = []
+  sandbox.transport = async (path, options) => { calls.push({ path, options }); return { ok: true } }
+  vm.runInContext('requestPlugin = transport', sandbox)
+  sandbox.queryClient = { fetchQuery: options => options.queryFn() }
+  sandbox.host.profileRoutes = async () => [
+    { connectionId: 'local', profile: 'remote-alias', targetProfile: 'wrong-local-profile' },
+    { connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' },
+  ]
+  const focus = setLiveFocus()
+  for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/context', '/search', '/scopes', '/activity', '/upload-ticket', '/uploads/fixture-ticket']) {
+    const upload = { filename: 'notes.txt', contentType: 'text/plain', bytes: new Uint8Array([1]).buffer }
+    await sandbox.requestForFocus(focus, endpoint, { method: 'POST', body: { profile: 'remote-alias', focused_profile: 'remote-alias', connection_id: 'fixture-ssh' }, upload })
+    const call = calls.at(-1)
+    assert.equal(call.path, `${endpoint}?profile=research`)
+    assert.equal(call.options.body.profile, 'research')
+    assert.equal(call.options.body.focused_profile, 'research')
+    assert.equal(call.options.body.connection_id, 'fixture-ssh')
+    assert.equal(call.options.upload, upload)
+  }
+})
+
+test('missing or ambiguous SSH routes never fall back to local transport', async () => {
+  let calls = 0
+  sandbox.transport = async () => { calls++ }
+  vm.runInContext('requestPlugin = transport', sandbox)
+  const focus = setLiveFocus()
+  const route = { connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' }
+  for (const routes of [[], [route, route], [{ ...route, targetProfile: '' }]]) {
+    sandbox.host.profileRoutes = async () => routes
+    await assert.rejects(sandbox.requestForFocus(focus, '/snapshot', {}), /route/i)
+  }
+  sandbox.host.profileRoutes = undefined
+  await assert.rejects(sandbox.requestForFocus(focus, '/snapshot', {}), /routing/i)
+  assert.equal(calls, 0)
+})
+
+function setLiveFocus(overrides = {}) {
+  const values = { profile: 'remote-alias', focusedSessionProfile: 'remote-alias', connectionId: 'fixture-ssh', focusedSessionOwner: { connectionId: 'fixture-ssh', profile: 'remote-alias' }, focusedSessionId: 'fixture-runtime', focusedStoredSessionId: 'fixture-stored', cwd: '/srv/fixture', busy: false, awaitingResponse: false, ...overrides }
+  sandbox.host ||= {}
+  sandbox.host.state = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { get: () => value }]))
+  sandbox.useValue = atom => atom.get()
+  return sandbox.useFocusScope()
+}
+
+test('unresolved saved-session ownership fails closed instead of assuming local', () => {
+  assert.equal(setLiveFocus({ focusedSessionOwner: null }).routeMismatch, true)
+})
+
+test('SSH target changes cannot retarget confirmed file content', async () => {
+  let calls = 0
+  sandbox.transport = async () => { calls++ }
+  vm.runInContext('requestPlugin = transport', sandbox)
+  const focus = { ...setLiveFocus(), backendProfile: 'research' }
+  sandbox.host.profileRoutes = async () => [{ connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'other-profile' }]
+  await assert.rejects(sandbox.requestForFocus(focus, '/uploads/fixture-ticket', {}), /target changed/i)
+  assert.equal(calls, 0)
+})
+
+test('a connection switch during SSH route lookup prevents dispatch', async () => {
+  let calls = 0
+  sandbox.transport = async () => { calls++ }
+  vm.runInContext('requestPlugin = transport', sandbox)
+  const focus = setLiveFocus()
+  sandbox.host.profileRoutes = async () => {
+    setLiveFocus({ connectionId: 'local' })
+    return [{ connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' }]
+  }
+  await assert.rejects(sandbox.requestForFocus(focus, '/snapshot', {}), /changed/)
+  assert.equal(calls, 0)
+})
+
+test('an owner-profile change during route lookup prevents dispatch', async () => {
+  let calls = 0
+  sandbox.transport = async () => { calls++ }
+  vm.runInContext('requestPlugin = transport', sandbox)
+  const focus = setLiveFocus()
+  sandbox.host.profileRoutes = async () => {
+    setLiveFocus({ focusedSessionOwner: { connectionId: 'fixture-ssh', profile: 'different-profile' } })
+    return [{ connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' }]
+  }
+  await assert.rejects(sandbox.requestForFocus(focus, '/snapshot', {}), /changed/)
+  assert.equal(calls, 0)
+})
+
+test('confirmed uploads refresh remote routes instead of accepting a cached target', async () => {
+  const focus = { ...setLiveFocus(), backendProfile: 'research' }
+  sandbox.queryClient = { fetchQuery: options => {
+    assert.equal(options.staleTime, 0)
+    return options.queryFn()
+  } }
+  sandbox.host.profileRoutes = async () => [{ connectionId: 'fixture-ssh', profile: 'remote-alias', targetProfile: 'research' }]
+  sandbox.transport = async () => ({ ok: true })
+  vm.runInContext('requestPlugin = transport', sandbox)
+  await sandbox.requestForFocus(focus, '/uploads/fixture-ticket', {})
 })
 
 test('native controls keep SDK styling while ownership values remain literal', () => {
@@ -138,6 +234,7 @@ test('native controls keep SDK styling while ownership values remain literal', (
 })
 
 test('search submits on Enter or its named action, never on Clear or IME composition', () => {
+  setLiveFocus()
   const recorded = []
   let stateIndex = 0
   sandbox.useContext = () => 'wide'

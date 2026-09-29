@@ -10,6 +10,10 @@ dashboard. The visual language borrows the dashboard's dense operational
 hierarchy while retaining Hermes components, theme tokens, typography, focus
 behavior, and pane layout.
 
+![Honcho overview with synthetic demonstration data](docs/screenshots/overview-dark.png)
+
+[Screenshot gallery](docs/screenshots/README.md) · [Windows and SSH testing](docs/windows-ssh-testing.md) · [Catalogue submission](docs/catalogue.md)
+
 ## What it shows
 
 The `/honcho` workspace contains six focused sections and one confirmed write
@@ -55,7 +59,9 @@ the prior chat's data instead of displaying it while the next chat loads.
 
 ## Requirements
 
-- Hermes Agent with Desktop Plugin SDK support (tested with v0.20.6)
+- Current Hermes Desktop with `host.profileRoutes()`, focused-session ownership,
+  shared React Query and `ctx.rest()` upload support. See the exact tested
+  upstream revision in [release verification](docs/release-readiness.md).
 - Honcho configured for each Hermes profile you want to inspect
 - Honcho 3.2.0 and Python `honcho-ai` 2.5.0 are verified targets. The existing
   read/upload workflows are also tested with SDK 2.2.0 and 2.4.0, with optional
@@ -70,11 +76,13 @@ hermes honcho setup
 
 ## Install
 
-Once this repository is published:
+Install the published revision:
 
 ```sh
 hermes plugins install outpoints/hermes-honcho-plugin --enable
 ```
+
+While the repository is private, Git must be authenticated with access to it.
 
 Restart Hermes Desktop so the Python API is mounted. Unified installs appear in
 **Settings → Plugins** and remain opt-in until the **Honcho** desktop plugin is
@@ -130,6 +138,18 @@ remote companion is missing.
 Restart the affected local or remote Hermes backend after installation so its
 plugin API routes mount.
 
+SSH aliases do not need to match the remote profile name. The plugin obtains
+the host's authoritative route using `host.profileRoutes()` and sends the
+remote `targetProfile` in both the URL selector and request provenance. The
+confirmation strip shows the backend profile, not the workstation alias.
+Unknown routes, unresolved saved-session ownership and focus changes fail
+closed before dispatch. Confirmed uploads refresh route discovery and reject
+a changed target. Hermes still owns the tunnel, authentication and routing.
+
+For an unpublished candidate, copy the same candidate files to the workstation
+and remote companion. Installing from GitHub does not include uncommitted local
+changes. Follow the [Windows SSH checklist](docs/windows-ssh-testing.md).
+
 ## Development
 
 Run all static contract and backend unit checks:
@@ -139,8 +159,10 @@ Run all static contract and backend unit checks:
 hermes plugins doctor --ci .
 ```
 
-Set `HERMES_PYTHON` when the checks cannot discover the Python interpreter that
-runs Hermes. See the [release verification record](docs/release-readiness.md)
+The check script detects managed Hermes launchers and runs Python checks through
+`hermes --run-module`, preserving the host's composed dependencies. Legacy
+virtualenv installs and an explicit `HERMES_PYTHON` remain supported.
+See the [release verification record](docs/release-readiness.md)
 for tested versions, privacy checks, UI coverage and deployment limitations.
 
 The plugin deliberately has no frontend build step and adds no third-party

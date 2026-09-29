@@ -1,6 +1,6 @@
 manifest_version: 1
 name: hermes-honcho-plugin
-version: 0.3.0
+version: 0.3.1
 description: Native Hermes Desktop cockpit for inspecting and adding to the focused Honcho session.
 author: outpoints
 homepage: https://github.com/outpoints/hermes-honcho-plugin

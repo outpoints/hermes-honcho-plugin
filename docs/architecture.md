@@ -122,6 +122,18 @@ never retried against a local profile or another connection. Duplicate profile
 names on different gateways remain distinct because connection ID is part of
 request and cache identity.
 
+Before a remote request, `host.profileRoutes()` supplies the authoritative
+mapping from `(connectionId, profile)` to `targetProfile`. The plugin puts that
+target in the URL selector and both profile provenance fields. Read-route
+discovery shares the host React Query cache for 10 seconds. Confirmed uploads
+refresh it immediately and compare against the backend profile shown in the
+confirmation. `ctx.rest()` remains the sole transport.
+
+The plugin checks live focus ownership again after asynchronous route discovery.
+Unresolved saved-session ownership, ambiguous routes and connection/profile
+changes cannot silently dispatch to the newly active gateway. Ticket creation
+and multipart dispatch use the same confirmed backend profile.
+
 ## Desktop surfaces
 
 - `/honcho`: tabbed memory cockpit with Overview, Messages, Conclusions,

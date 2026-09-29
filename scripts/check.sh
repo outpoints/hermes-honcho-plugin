@@ -11,6 +11,11 @@ node --check dashboard/dist/index.js
 node --test tests/*.test.mjs
 
 if [[ -z "$hermes_python" ]] && command -v hermes >/dev/null 2>&1; then
+  # Managed installs compose dependency layers at launch. A bare Python (even
+  # an old venv still on disk) does not carry that environment.
+  if hermes --print-runtime-command >/dev/null 2>&1; then
+    exec hermes --run-module unittest discover -s tests -p 'test_*.py' -v
+  fi
   hermes_python="$(dirname "$(command -v hermes)")/python"
 fi
 if [[ -z "$hermes_python" ]]; then

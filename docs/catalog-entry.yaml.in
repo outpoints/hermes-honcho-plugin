@@ -1,0 +1,25 @@
+# Submission template. Replace every RELEASE_COMMIT_SHA after publishing the verified commit.
+name: hermes-honcho-plugin
+repo: https://github.com/outpoints/hermes-honcho-plugin
+sha: RELEASE_COMMIT_SHA
+description: Inspect focused Honcho memory and explicitly add source material inside Hermes Desktop.
+maintainer: outpoints
+tier: community
+category: desktop
+version: "0.3.1"
+docs_url: https://github.com/outpoints/hermes-honcho-plugin
+image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/messages.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/conclusions.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/context.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/add-to-session.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/memory-pane.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

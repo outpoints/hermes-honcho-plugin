@@ -23,6 +23,7 @@ import {
   Input,
   PANES_AREA,
   PALETTE_AREA,
+  queryClient,
   ROUTES_AREA,
   SearchField,
   SegmentedControl,
@@ -172,9 +173,15 @@ function useFocusScope() {
   const busy = useValue(host.state.busy)
   const awaitingResponse = useValue(host.state.awaitingResponse)
   const ownerConnection = focusedOwner?.connectionId || null
-  const profileMismatch = Boolean(focusedProfile && activeProfile && focusedProfile !== activeProfile)
+  const profileMismatch = Boolean(
+    (focusedProfile && activeProfile && focusedProfile !== activeProfile) ||
+    (focusedOwner?.profile && activeProfile && focusedOwner.profile !== activeProfile)
+  )
   const connectionMismatch = Boolean(ownerConnection && connectionId && ownerConnection !== connectionId)
-  const routeMismatch = profileMismatch || connectionMismatch
+  // The SDK returns null for ambiguous/unresolved saved-session ownership.
+  // Never reinterpret that as permission to read the active backend instead.
+  const ownerUnresolved = Boolean(storedSessionId && !ownerConnection)
+  const routeMismatch = profileMismatch || connectionMismatch || ownerUnresolved
   const profile = activeProfile || 'default'
   const focusProfile = focusedProfile || profile
   const activeConnection = connectionId || 'local'
@@ -216,15 +223,49 @@ function useFocusScope() {
   }
 }
 
-function requestForFocus(focus, endpoint, options) {
+function assertCurrentFocus(focus) {
+  const state = host.state
+  const profile = state.profile.get() || 'default'
+  const connection = state.connectionId.get() || 'local'
+  const owner = state.focusedSessionOwner.get()
+  const fingerprint = [
+    profile, connection, state.focusedSessionProfile.get() || profile,
+    owner?.connectionId || connection, state.focusedStoredSessionId.get() || '',
+    state.focusedSessionId.get() || '', state.cwd.get() || ''
+  ].join('|')
+  if (fingerprint !== focus.fingerprint || (owner?.profile && owner.profile !== profile) || (state.focusedStoredSessionId.get() && !owner?.connectionId)) {
+    throw new Error('The focused conversation changed. Refresh and confirm the new target.')
+  }
+}
+
+async function requestForFocus(focus, endpoint, options) {
   if (!requestPlugin) throw new Error('Honcho plugin backend is not registered')
   if (focus.routeMismatch) throw new Error('The focused conversation does not match the active profile or connection.')
-  // Some Desktop versions omit the selector for a shared local backend.
-  // Keep ctx.rest as the authenticated transport; remote aliases remain host-owned.
-  const path = focus.connectionId === 'local'
-    ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}profile=${encodeURIComponent(focus.activeProfile)}`
-    : endpoint
-  return requestPlugin(path, options)
+  assertCurrentFocus(focus)
+  let targetProfile = focus.activeProfile
+  if (focus.connectionId !== 'local') {
+    if (typeof host.profileRoutes !== 'function') throw new Error('Update Hermes Desktop to enable remote profile routing.')
+    const routes = await queryClient.fetchQuery({
+      queryKey: [PLUGIN_ID, 'profile-routes', focus.connectionId, focus.activeProfile],
+      queryFn: () => host.profileRoutes(),
+      staleTime: focus.backendProfile ? 0 : POLL_INTERVAL_MS,
+      retry: false
+    })
+    const matches = routes.filter(route => route.connectionId === focus.connectionId && route.profile === focus.activeProfile)
+    if (matches.length !== 1 || !matches[0].targetProfile?.trim()) throw new Error('The selected remote profile route is unavailable or ambiguous. No Honcho request was sent.')
+    targetProfile = matches[0].targetProfile
+  }
+  if (focus.backendProfile && targetProfile !== focus.backendProfile) {
+    throw new Error('The remote profile target changed after confirmation. Refresh and confirm the new target.')
+  }
+  // ctx.rest chooses its connection at dispatch time, not when React rendered.
+  // Recheck after async route discovery (and before multipart content leaves).
+  assertCurrentFocus(focus)
+  const path = `${endpoint}${endpoint.includes('?') ? '&' : '?'}profile=${encodeURIComponent(targetProfile)}`
+  return requestPlugin(path, {
+    ...options,
+    ...(options.body ? { body: { ...options.body, profile: targetProfile, focused_profile: targetProfile } } : {})
+  })
 }
 
 function useEndpointForFocus(focus, endpoint, keyParts = [], extraBody = {}, options = {}) {
@@ -293,7 +334,7 @@ function LineageStrip({ focus, snapshot }) {
   const config = snapshot?.data?.config
   const items = [
     ['Connection', focus.connectionId],
-    ['Profile', focus.activeProfile],
+    ['Profile', snapshot?.data?.profile || focus.activeProfile],
     ['Honcho session', chat?.honcho_session_id],
     ['Attributed peer', config?.user_peer]
   ]
@@ -346,6 +387,7 @@ function AddToSessionDialog({ origin, snapshot }) {
       if (!requestPlugin) throw new Error('Honcho plugin backend is not registered')
       const confirmedFingerprint = openedFingerprintRef.current
       if (focusFingerprintRef.current !== confirmedFingerprint) throw new Error('The focused conversation changed. Reopen Add to Session and confirm the new target.')
+      const confirmedFocus = { ...focus, backendProfile: snapshot.data?.profile }
 
       let filename
       let contentType
@@ -365,7 +407,7 @@ function AddToSessionDialog({ origin, snapshot }) {
         sourceKind = 'file'
       }
 
-      const ticket = await requestForFocus(focus, '/upload-ticket', {
+      const ticket = await requestForFocus(confirmedFocus, '/upload-ticket', {
         method: 'POST',
         body: {
           ...focus.body,
@@ -387,7 +429,7 @@ function AddToSessionDialog({ origin, snapshot }) {
 
       let uploaded
       try {
-        uploaded = await requestForFocus(focus, `/uploads/${encodeURIComponent(ticket.ticket)}`, {
+        uploaded = await requestForFocus(confirmedFocus, `/uploads/${encodeURIComponent(ticket.ticket)}`, {
           method: 'POST',
           upload: { filename, contentType, bytes },
           timeoutMs: 125_000

@@ -1,0 +1,55 @@
+{
+  "synthetic": true,
+  "host_commit": "39faafb61688282a372ff2d59191581588e9a003",
+  "plugin_sha256": "a605b555ae0f6d5c1e624523564274c9988e5765e0514907612fb0d6ed2011ca",
+  "captures": [
+    {
+      "file": "overview-dark.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "messages.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "conclusions.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "context.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "search.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "add-to-session.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "overview-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "banner.png",
+      "width": 3200,
+      "height": 1600
+    },
+    {
+      "file": "memory-pane.png",
+      "width": 720,
+      "height": 2400
+    }
+  ],
+  "browser_errors": [],
+  "external_requests": [],
+  "upload_requests": 0
+}

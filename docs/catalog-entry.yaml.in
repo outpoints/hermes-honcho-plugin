@@ -1,21 +1,23 @@
 # Submission template. Replace every RELEASE_COMMIT_SHA after publishing the verified commit.
 name: hermes-honcho-plugin
+title: Honcho Memory
 repo: https://github.com/outpoints/hermes-honcho-plugin
 sha: RELEASE_COMMIT_SHA
-description: Inspect focused Honcho memory and explicitly add source material inside Hermes Desktop.
+description: "Desktop workbench for the Honcho memory behind the focused chat: read the newest conclusions, trace their premises, search messages, ask scoped questions, and add confirmed corrections or source files. Uses each profile's existing Honcho provider configuration. Disclosure: reads and confirmed writes go to the Honcho server that profile already uses; Ask runs a reasoning call that may incur Honcho usage. No telemetry and no credentials leave Hermes."
 maintainer: outpoints
 tier: community
 category: desktop
-version: "0.3.1"
+version: "0.4.0"
+requires_hermes: ">=0.21.4"
 docs_url: https://github.com/outpoints/hermes-honcho-plugin
-image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/overview-dark.png
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/messages.png
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/conclusions.png
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/context.png
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/add-to-session.png
-  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/screenshots/memory-pane.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-memory.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-ask.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-correct.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-pane.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-messages.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/gallery-status.png
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

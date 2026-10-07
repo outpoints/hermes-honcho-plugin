@@ -1,6 +1,6 @@
 # Windows Desktop → SSH gateway test
 
-The 0.3.1 candidate implements remote profile-alias translation using the public
+Version 0.4.0 implements remote profile-alias translation using the public
 Hermes SDK. Offline tests exercise the actual host REST bridge and Electron
 profile mapper. A live Windows/SSH run is still required before release.
 
@@ -53,7 +53,7 @@ The remote profile must already have working Honcho configuration. Restart only
 the affected remote Hermes backend so it imports the companion. Do not copy
 Honcho credentials or SSH keys into the plugin or workstation renderer.
 
-Check that both installed manifests report **0.3.1**. Installing from GitHub
+Check that both installed manifests report **0.4.0**. Installing from GitHub
 never includes uncommitted local changes.
 
 ## Acceptance checklist
@@ -65,12 +65,23 @@ Do not use personal memory to make screenshots or test fixtures.
   different from its remote profile, for example `desktop-alias` → `research`.
 - [ ] Open a saved conversation on that gateway and open **Honcho**. The lineage
   shows the SSH connection, remote profile, correct Honcho session and user peer.
-- [ ] Overview, Messages, Conclusions, Context, Search and Activity read that
-  remote session. Optional unsupported APIs show their capability notice.
+- [ ] Memory, Ask, Messages, Context and Status read that remote session.
+  Optional unsupported APIs show their capability notice.
+- [ ] Conclusion search and inspection stay inside the configured peer pair.
+  Ask memory runs only on explicit submit and labels its session/across-session
+  scope. Accessed records are not presented as guaranteed citations.
+- [ ] In the disposable workspace only, cancel a correction without requests,
+  then confirm one synthetic fact. Verify its exact ID/content/target and that
+  the original conclusion remains. Switch focus during preparation and confirm
+  no stale write is sent. Never retry an unknown outcome automatically.
 - [ ] Open the docked memory pane. Refresh and copy work without local fallback.
 - [ ] Switch between local and SSH conversations, including profiles with the
   same display name on different gateways. Old memory is not shown under a new
-  target. A focus ownership mismatch blocks reads.
+  target. A chat on a connection other than the active one shows "This chat is
+  on another connection" and sends no request.
+- [ ] With the sidebar showing all profiles, open a chat from another profile on
+  the same connection. Memory reads that profile, and Status shows the active
+  profile under "Read through".
 - [ ] Paste one synthetic note, review the remote target and explicitly confirm.
   Verify the created message in the exact remote Honcho session.
 - [ ] Upload a small UTF-8 text file selected from Windows. Confirm the same

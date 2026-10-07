@@ -65,40 +65,33 @@ The Hermes Desktop `DESIGN.md` is authoritative when it changes. Current hard co
 
 Layout is based on the plugin container width, measured with `ResizeObserver`, not the global app viewport.
 
-### Narrow: under 420px
+### Narrow: under 440px
 
 For the docked pane and very narrow route tiles:
 
-- One content column.
-- Lineage uses a compact two-by-two strip; identifiers wrap within their cells
-  instead of making provenance consume four full rows.
-- Detail rows stack label above value; values are left-aligned.
-- Metric readouts use at most two columns and collapse to one when content needs it.
-- Primary actions fill available width; related quiet actions may share a row.
-  Hermes Button variants and sizes own hit targets, padding, and radius.
-- The tab rail becomes one Hermes Select showing the current section, avoiding
-  clipped or undiscoverable horizontal overflow.
-- Dialog/form controls stack; filenames and session IDs wrap instead of truncating critical identity.
+- One content column. The pane omits the page title; the status and actions
+  lead the header.
+- The lineage wraps inline (`Connection local · Profile demo · …`); identifiers
+  wrap rather than truncate.
+- Sections live behind one host-style menu trigger (`Memory ⌄`), not tabs.
+- Toolbars stack: search on its own row, then scope and the primary action
+  share a row.
+- Selecting a conclusion replaces the list with its inspector and a back
+  button (`All conclusions`).
+- Detail rows keep a narrow label column (6.5rem) instead of stacking.
 
-### Compact: 420–839px
+### Compact: 440–879px
 
-For resized panes and small workspace tiles:
+- Text tabs, one content column.
+- Selecting a conclusion replaces the list, as in narrow.
 
-- One major region per row.
-- Use the shared section Select rather than squeezing six tabs into a compact pane.
-- Metric strips use two columns.
-- Session and profile regions remain separate but can share horizontal detail rows.
-- Upload preview remains a single reading column.
+### Wide: 880px and above
 
-### Wide: 840px and above
-
-For ordinary and full-width workspace views:
-
-- Use a 12-column composition.
-- Focused session is primary at 7 columns; profile/configuration is secondary at 5.
-- Current-session and workspace queues sit side by side at 6 columns each.
-- Reading surfaces such as messages, conclusions, search results, and context preview can use the full width, but prose is capped near 72 characters per line.
-- Extra width creates useful comparison and breathing room, not stretched label/value pairs.
+- Memory splits into the conclusion list (3fr) and a sticky inspector (2fr,
+  min 18rem) separated by one tertiary hairline. With nothing selected, the
+  inspector shows the session summary and peer card.
+- Status uses two columns of grouped detail rows.
+- Prose is capped near 72 characters. Ask and Context cap their column at 880px.
 
 Full-width does not mean every panel spans edge to edge. Content width follows semantic usefulness while the composition fills the workspace.
 
@@ -180,7 +173,8 @@ Do not call 10 MB a Honcho limit. Current Honcho source exposes configurable `MA
 ## Interaction and motion
 
 - Use Hermes Button, Input, Textarea, Dialog, status, loading, and copy primitives.
-- Use Hermes Tabs with arrow-key navigation at wide sizes, Select below wide, and SegmentedControl for short scope choices. Narrow scope controls use Select too.
+- Use the host's underline text-tab treatment (as on the Capabilities page) with arrow-key navigation, and a dropdown menu trigger below 440px. Use SegmentedControl for two-way scope choices and Select for longer lists. Narrow scope controls use Select too.
+- Runtime plugins get no Tailwind build. Every utility class must already exist in the host's shipped stylesheet; `scripts/check-ui-surface.mjs` enforces this. Put missing geometry (dialog size, grid columns, `last:`-style rules) in inline styles or logic.
 - Use the shared SearchField. Enter submits only the explicit search action, not its embedded Clear button, and IME composition must not submit.
 - Keep hover/press/focus transitions fast and functional.
 - No bounce, spring, background animation, or decorative motion.

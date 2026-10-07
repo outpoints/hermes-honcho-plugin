@@ -22,7 +22,11 @@ self-hosted Honcho without duplicating authentication.
    mismatched body provenance and profiles where the plugin is not enabled
    before loading Honcho config or creating a client.
 5. The backend loads `HonchoClientConfig.from_global_config()` and
-   `get_honcho_client(config)` from Hermes's built-in Honcho provider.
+   `get_honcho_client(config)` from the installed Honcho provider. It resolves
+   the client module through `plugins.memory.import_provider_module("honcho",
+   "client")` inside the request's profile scope, not through a fixed bundled
+   package path. Only older hosts without that resolver use the bundled import.
+   Resolver failures are not retried against another provider source.
 6. Before a scoped read, the adapter lists workspaces and verifies the
    configured workspace exists. It does not use an SDK get-or-create path.
 7. The backend reads the focused stored session's title provenance and working
@@ -35,6 +39,34 @@ self-hosted Honcho without duplicating authentication.
    including after an HTTP timeout or cancellation. Each collector returns
    bounded, sanitized data and can preserve successful subreads when another
    subread fails.
+
+### Inspector focus handoff
+
+The host's focused-session atoms describe the active pane. When a plugin pane
+gains focus, they can fall back from a chat tile to a different primary chat or
+an empty draft. Opening `/honcho` can also clear that primary selection.
+
+The plugin captures the inspected scope before its own pointer/focus events and
+navigation move host focus. One shared, memory-only atom preserves that exact
+scope across the pane, page and portalled Select/Dialog/menu controls. Window
+capture runs before host pane handlers. Its baseline settles in the next task
+because native dispatch can drain microtasks between capture and React
+listeners. Retargeted Select clicks at the document root are not new
+conversation choices.
+
+Host navigation is recognized by its effect, not by reading host markup. A
+pointer press or Enter/Space outside the plugin remembers the chat in view.
+If the route becomes `/honcho` within three seconds (seen by the bubbling
+click, a `hashchange`, or the page mounting), the page inspects that chat.
+Otherwise the click releases the retained scope. Catalog rule 8 forbids
+querying `data-tour`/`data-slot` markup, so the plugin never does.
+
+Outside pointer/focus movement, leaving the route, profile/connection/cwd
+changes, later session changes and disposal release the scope. A fresh draft or
+an unresolved owner cannot seed it. Both query keys and imperative pre-dispatch
+guards use the same scope. This is not an unconditional last-session fallback.
+Synthetic browser tests cover host navigation, native portal interactions and a
+page remount. Live renderer acceptance is separate.
 
 ### Profile scope contract
 
@@ -49,7 +81,7 @@ or authorization to open another home. Unknown profiles, disabled plugins and
 body/transport mismatches fail closed. Connection identity is enforced by the
 host transport, not authenticated from a JSON string.
 
-All nine route families use this boundary, including ticket preparation and
+All route families use this boundary, including ticket preparation and
 multipart upload. Tickets store the resolved profile even if the body omits
 it, so a ticket cannot be replayed through another profile. A pre-existing
 named host context is bound explicitly rather than accidentally pairing its
@@ -94,6 +126,26 @@ invalidates outstanding tickets. The API reads at most the confirmed byte count
 plus one from the multipart file and rejects mismatched sizes before contacting
 Honcho. Host multipart parsing and deployment-level request limits still apply.
 
+Additive correction uses the same safety boundary, but its own ticket store:
+
+1. The user reviews connection, backend profile, workspace, Honcho session,
+   observer, and observed user, then confirms a fact of at most 4,000 characters.
+2. `/correction-ticket` verifies the existing session and attached configured
+   peers. An optional original conclusion is read exactly within that
+   relationship. Preparation creates no Honcho records.
+3. A two-minute single-use ticket binds normalized content, the whole focus
+   tuple, and the target relationship. It is consumed inside the profile-bound
+   worker. Configuration and any original conclusion are revalidated before
+   `conclusions_of(user).create(...)` runs.
+4. The adapter reads the exact returned conclusion ID and verifies content,
+   session, observer, and observed peer. A malformed receipt, transport failure,
+   or failed readback yields an unknown outcome. Neither SDK nor UI retries it.
+
+Corrections are new explicit conclusions, not updates or deletions. The
+original ID is confirmation context, not a fabricated derivation edge. Both
+ticket stores are process-local. Request-local shallow SDK wrappers disable
+retries without mutating Hermes's cached client's retry policy or credentials.
+
 The dashboard manifest is hidden and its small JavaScript entry registers a
 null component. Hermes's web dashboard loads enabled manifests to mount their
 APIs, so this satisfies that host contract without creating a second UI.
@@ -125,7 +177,7 @@ request and cache identity.
 Before a remote request, `host.profileRoutes()` supplies the authoritative
 mapping from `(connectionId, profile)` to `targetProfile`. The plugin puts that
 target in the URL selector and both profile provenance fields. Read-route
-discovery shares the host React Query cache for 10 seconds. Confirmed uploads
+discovery shares the host React Query cache for 10 seconds. Confirmed writes
 refresh it immediately and compare against the backend profile shown in the
 confirmation. `ctx.rest()` remains the sole transport.
 
@@ -136,22 +188,36 @@ and multipart dispatch use the same confirmed backend profile.
 
 ## Desktop surfaces
 
-- `/honcho`: tabbed memory cockpit with Overview, Messages, Conclusions,
-  Context, Search, and Activity sections.
+- `/honcho`: memory-first workbench with Memory, Ask, Messages, Context, and
+  Status sections.
 - `Honcho Memory`: default-collapsed pane docked to the right of the focused
   conversation.
 - Sidebar navigation: opens `/honcho`.
 - Right status bar: compact connectivity, queue, and local-generation state.
-- Command palette: opens the cockpit or opens its Search section.
+- Command palette: opens the memory workbench.
 
-The visual system uses Hermes components and theme tokens. Its dashboard
-influence is structural: dense readout strips, quiet section hairlines,
-monospace operational data, readable memory content, and progressive
-disclosure. It does not copy the dashboard shell or add a frontend build/runtime
-dependency. `ResizeObserver` measures each rendered plugin surface: widths under
-420px stack details, widths under 840px use compact columns, and wider surfaces
-use asymmetric session/configuration and paired queue compositions. This is
-container-based because a docked pane can be narrow inside a wide app window.
+The pane renders the same workbench and unmounts its reads while collapsed.
+Page and pane navigation use distinct content IDs. Memory lists the session's
+newest conclusions first (Honcho's own order) with search, scope, and Add fact
+in one toolbar. Selecting a conclusion opens an inspector with its premises and
+derived conclusions: beside the list on wide surfaces, in place of it in
+narrow ones. Messages holds saved messages and message search. Status holds
+connection, mapping, configuration, and background-reasoning queues.
+
+When nothing can be read (not set up, disabled, missing workspace, draft or
+unsaved chat, unreachable server, or a chat on another connection) one state
+replaces the memory sections and names the next step. Status stays reachable.
+
+The visual system uses Hermes components and theme tokens: underline text tabs
+like the Capabilities page, `PanelEmpty` empty states, `DisclosureCaret`,
+`SearchField`, and quiet row hover/selection tokens. Runtime plugins get no
+Tailwind build, so `scripts/check-ui-surface.mjs` verifies that every class the
+plugin uses exists in the host's shipped stylesheet and every SDK import exists
+in the host. Geometry the stylesheet lacks (dialog size, grid columns) is
+inline. `ResizeObserver` measures each rendered surface: under 440px uses a
+section menu and stacked toolbars, under 880px a single column, and wider
+surfaces a list/inspector split. This is container-based because a docked pane
+can be narrow inside a wide app window.
 
 ## Backend endpoints
 
@@ -159,7 +225,7 @@ All endpoints are `POST` requests under the plugin's profile-scoped namespace.
 Every model rejects unknown fields and inherits the focused-session ownership
 fields used by `/snapshot`.
 
-| Route | Read behavior | Bounds and refresh |
+| Route | Behavior | Bounds and refresh |
 | --- | --- | --- |
 | `/snapshot` | Connection, config, mapping, counts, peers, and queues | One summary object; polled no faster than 10 seconds |
 | `/messages` | Saved messages for the resolved session | Page 1+, size 1 to 100; route/focus/manual refresh |
@@ -168,6 +234,12 @@ fields used by `/snapshot`.
 | `/search` | Session, peer, workspace, or verified existing Honcho-scope search | Submitted query only; length 1 to 2,000; limit 1 to 100 |
 | `/scopes` | Existing visibility scopes (SDK 2.4+, server 3.1+); never get-or-create | Page 1+, size 1 to 100; capability-gated and no polling |
 | `/activity` | Workspace and session queue status plus SDK capabilities | Aggregate-only where required; polled no faster than 10 seconds |
+| `/capabilities` | Selected backend's safe search, inspection, question, evidence, and correction flags | Non-creating discovery; no reasoning call; shared cache |
+| `/conclusion-search` | Semantic search of the configured observer-to-user relationship | Session or across sessions; query 1 to 2,000 characters; limit 1 to 50; explicit submit |
+| `/conclusion-detail` | Exact relationship-bound record plus optional parent/derived records | One level, at most ten per direction; partial failures preserve the original |
+| `/ask` | New reasoning call for the configured observer and target user | Session or across sessions; query 1 to 2,000 characters; explicit submit; 90-second collector timeout; no retry |
+| `/correction-ticket` | Binds one corrective fact and optional original record to the confirmed relationship/session | Content 1 to 4,000 characters; two-minute one-time ticket; no write |
+| `/corrections` | Adds an explicit conclusion and verifies exact ID/content/target | Ticket only; no automatic retry; unknown outcomes remain unknown |
 | `/upload-ticket` | Revalidates and binds a proposed file/text write to the exact existing session and user peer | Metadata only; supported types only; one-time ticket expires after two minutes |
 | `/uploads/{ticket}` | Sends one PDF, JSON, or text payload through `Session.upload_file` and verifies every returned message | Multipart upload; authoritative file-size enforcement belongs to Honcho |
 
@@ -178,15 +250,25 @@ than guessed data.
 
 ## Focus and stale-data isolation
 
-A focused chat can belong to another profile or remote connection while the
-renderer remains connected to its home gateway. The renderer therefore sends
-both home and focused ownership. The backend fails closed if either differs.
+A focused chat can belong to another profile or connection while the window
+stays on its active profile, for example in the sidebar's all-profiles view.
+The SDK resolves the focused chat's owner. A chat owned by another profile on
+the same connection is read in its owner's profile: the plugin sends that
+profile as an explicit `?profile=` selector, which Electron's local and
+shared-primary routing preserves, and as body provenance. A chat on another
+connection, or with ambiguous ownership, is blocked with a specific reason,
+because `ctx.rest()` cannot reach a connection other than the active one. The
+backend still rejects any body/route mismatch.
 
 A focus change produces a new query key immediately. The previous chat's value
 is not used as placeholder data. Search submissions also store the focus
 fingerprint that launched them; switching chats clears the submission and does
-not replay it against the next chat. Pane queries are disabled while the pane
-is collapsed.
+not replay it against the next chat. Questions are non-retrying mutations, not
+queries that refresh can replay. Their results and open correction dialogs
+are unmounted on a focus change. The last live focus check before dispatch
+prevents a stale ticket response from initiating a write. A write already sent
+cannot be cancelled remotely, and a lost result must not be treated as unsaved.
+Pane queries are disabled while the pane is collapsed.
 
 ## Security and privacy
 
@@ -198,11 +280,12 @@ is collapsed.
   cookies, passwords, secrets, and API-key-shaped metadata are redacted.
 - Error strings and returned content fields are length-bounded.
 - No returned or logged context contains a credential-bearing endpoint.
-- Read routes do not create or delete sessions, peers, scopes, messages,
-  conclusions, context, or reasoning work.
-- The only write route requires an explicit UI confirmation and a short-lived,
-  one-time target ticket. It can create only messages in the exact existing
-  focused session.
+- Discovery and ordinary read routes do not create or delete sessions, peers,
+  scopes, messages, conclusions, or reasoning work. `/ask` is separately
+  triggered and may incur reasoning usage.
+- Both write paths require explicit UI confirmation and short-lived one-time
+  target tickets. They create only session messages or an explicit conclusion
+  in the configured agent-to-user relationship with current-session attribution.
 - Upload content type is limited to PDF, JSON, and `text/*`. File bytes are not
   stored in the ticket or logged.
 - A verified upload response includes exact readback of every created message
@@ -213,8 +296,10 @@ is collapsed.
 Top-level states distinguish `not_configured`, `disabled`, `route_mismatch`,
 `workspace_missing`, `session_missing`, `unreachable`, and `unavailable`.
 Context and snapshot collectors can return `partial` data with scoped errors.
-The desktop keeps healthy layers visible and presents errors near the affected
-surface instead of replacing the whole cockpit.
+A snapshot is `ok` whenever any workspace read succeeds, so the desktop also
+checks whether the chat itself has a saved Honcho session before showing
+memory. It keeps healthy layers visible and presents partial errors near the
+affected surface.
 
 ## Compatibility
 
@@ -228,7 +313,7 @@ remote backend. It uses signature-based capability checks for APIs that differ
 between Honcho versions and reports unavailable detail honestly.
 
 The current automated matrix runs against the real Python SDK 2.2.0, 2.4.0,
-and 2.5.0. First-class scopes require SDK 2.4+ and server 3.1+. Scope discovery
+2.5.0, and 2.5.1. First-class scopes require SDK 2.4+ and server 3.1+. Scope discovery
 uses `Honcho.scopes()`. Exact search-boundary verification uses SDK 2.5's
 non-creating `get_scope(id)` after workspace verification, or paginated scope
 listing on 2.4 (at most 100 pages of 100 scopes). Exhausting that budget reports
@@ -246,13 +331,21 @@ The adapter preserves those fields and labels parents as conclusions, not
 messages. Parent lists are bounded to 100 IDs with an explicit truncation flag.
 Older SDKs return null for absent attribution. SDK 2.5 itself defaults a missing
 derivation count to 1, so that count alone is not proof of server 3.2 support.
-The plugin does not make new single-conclusion or graph-traversal requests.
+Exact conclusion lookup uses an ID-filtered relationship list and verifies the
+returned identity rather than trusting a server to honor filters. The inspector
+loads parent/derived records only when the SDK has graph APIs and the selected
+server's read-only OpenAPI metadata confirms version 3.2+. Unknown server
+metadata disables optional graph and evidence calls, not basic reads/questions.
 
-Aggregate queue status and confirmed uploads work in all three matrix SDKs.
+Aggregate queue status and confirmed uploads work in every matrix SDK.
 Failed-work-unit and recent-task detail remains unavailable through those queue
-APIs, so Activity still labels that state `AGGREGATE_QUEUE_ONLY`. Honcho 3.1.2's
+APIs, so Status labels that state "Totals only". Honcho 3.1.2's
 service-wide `/deriver/metrics` is a different API, not a workspace queue total.
-It, chat evidence, and collector traces are not implemented here. See
+Service-wide metrics and collector traces are not implemented here. Question
+evidence, when supported, retains unknown peer attribution from older responses
+and omits explicitly mismatched relationships or session IDs. Conclusions,
+message references, and tool-call metadata are bounded to twenty each. A bad
+evidence layer does not erase a valid answer. See
 [compatibility.md](compatibility.md) for verified coverage and feature boundaries.
 
 ## File-size semantics
@@ -276,7 +369,7 @@ These write operations remain intentionally unimplemented:
 
 - Schedule a dream.
 - Retry failed reasoning work.
-- Create or delete conclusions.
+- Delete conclusions or edit them in place. Additive correction is implemented.
 - Edit peer cards.
 - Add or remove session peers.
 - Create, attach, edit, or delete Honcho scopes.

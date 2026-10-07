@@ -1,255 +1,162 @@
-# Hermes Honcho Plugin
+# Honcho Memory for Hermes
 
-A native memory cockpit for Hermes Desktop. It follows the focused conversation
-and exposes a compact right-side **Honcho Memory** pane, a tabbed `/honcho`
-workspace, and a status-bar indicator.
+![Honcho Memory](docs/catalog/banner.png)
 
-The plugin connects directly to the Honcho instance already configured in
-Hermes. It does not proxy through, embed, or depend on the separate Honcho
-dashboard. The visual language borrows the dashboard's dense operational
-hierarchy while retaining Hermes components, theme tokens, typography, focus
-behavior, and pane layout.
+A Hermes Desktop plugin for the [Honcho](https://honcho.dev) memory behind the
+chat you are looking at. Read what Honcho concluded, see where each conclusion
+came from, search what was said, ask a question, and correct memory that is
+wrong, without leaving the conversation.
 
-![Honcho overview with synthetic demonstration data](docs/screenshots/overview-dark.png)
+It opens as a page from the sidebar (**Honcho**) and as a **Honcho Memory**
+pane docked beside the chat. A status-bar item shows whether Honcho is
+reachable and whether background reasoning is still running.
 
-[Screenshot gallery](docs/screenshots/README.md) · [Windows and SSH testing](docs/windows-ssh-testing.md) · [Catalogue submission](docs/catalogue.md)
+![Memory section with synthetic demonstration data](docs/screenshots/memory-dark.png)
 
 ## What it shows
 
-The `/honcho` workspace contains six focused sections and one confirmed write
-action:
+- **Memory**: the session's conclusions, newest first, with semantic search and
+  a switch between this session and all sessions. Select a conclusion to see its
+  premises, what was derived from it, and where it was recorded.
+- **Ask**: asks Honcho a question about the user, scoped to this session or all
+  sessions, at the reasoning effort you choose. On supported servers it lists the
+  records Honcho read. Reading a record is not proof that it supports the answer.
+- **Messages**: saved messages for the session, plus Honcho search across the
+  session, the user, the whole workspace, or a named Honcho scope.
+- **Context**: what Honcho would supply right now (summary, representation, peer
+  card, recent messages) at a token budget you pick. This is a fresh build, not
+  a record of what an earlier reply received.
+- **Status**: the connection, profile, Honcho session, mapping, configuration,
+  and background-reasoning queues for this chat.
 
-- **Overview**: connection, workspace, session mapping, queue, peers, and local
-  generation state.
-- **Messages**: bounded, paginated saved-message history with peer, token, and
-  timestamp provenance.
-- **Conclusions**: current-session or workspace conclusions with observer,
-  observed peer, source session, type, level, and creation time. Honcho 3.2 with
-  Python SDK 2.5 also exposes parent conclusion IDs and derivation counts.
-- **Context**: bounded session summary, representation, peer context, peer card,
-  and source-layer availability.
-- **Search**: explicitly triggered session, peer, workspace, or existing Honcho
-  scope search that preserves Honcho's result order. Named scopes appear only
-  when the selected profile backend exposes the Python SDK 2.4+ scope APIs
-  and the server accepts scope listing (Honcho 3.1+).
-- **Activity**: workspace and current-session reasoning queues plus honest SDK
-  capability reporting.
-- **Add to session**: paste text or select a PDF, JSON, or text file, review the
-  exact connection/profile/session/peer target, then explicitly confirm the
-  write. Honcho may split extracted content into multiple messages.
+A Honcho session can span several Hermes chats, for example when sessions are
+mapped per repository. The header shows the connection, profile, Honcho session,
+and peer, so it is always clear whose memory you are reading.
 
-The default-collapsed right pane presents the current Honcho session, saved
-messages, conclusions, attached peers, queue state, latest memory activity, and
-a short context preview. It also provides add, open, search, copy, and refresh
-actions.
+## Changing memory
 
-The same semantic components adapt to their rendered container rather than the
-global window. A narrow docked pane stacks lineage and details, ordinary
-workspace widths use compact columns, and full-width routes use asymmetric
-session/configuration and side-by-side queue compositions. Styling follows the
-Hermes Desktop design contract: shared controls, inherited theme tokens,
-tertiary hairlines, flat surfaces, and no custom palette or decorative shadow.
+Two actions write to Honcho. Both ask you to confirm the exact target first.
 
-Only the summary and aggregate activity endpoints poll, never faster than every
-10 seconds. Messages, conclusions, and context refresh on focus change, pane
-visibility, route mount, or manual refresh. Search runs only when submitted.
-Every query key includes the owning connection and profile plus the focused
-stored/runtime session and working directory. A focus change therefore clears
-the prior chat's data instead of displaying it while the next chat loads.
+- **Add fact** and **Add correction** add one explicit conclusion about the
+  user, attributed to the current Honcho session. Nothing is deleted or
+  overwritten, and derived memory may take a while to catch up. The plugin reads
+  the saved text back before reporting success.
+- **Add to session** sends pasted text or a PDF, JSON, or text file into the
+  current session. Honcho may split it into several messages, and each one is
+  read back by ID.
+
+If a response is lost, the outcome is reported as unknown and the action is not
+retried. Check Memory or Messages before trying again.
+
+## Profiles and connections
+
+The plugin follows the chat in focus. With the sidebar showing every profile, a
+chat from another profile on the same connection is read in that profile, using
+that profile's own Honcho configuration. A chat that lives on a different
+connection than the active one, or whose owner Hermes cannot determine, is
+shown as blocked with the reason. It is never read through another profile.
+
+Remote SSH and gateway connections work the same way when the plugin's backend
+is installed on the remote profile. See [Windows and SSH testing](docs/windows-ssh-testing.md).
 
 ## Requirements
 
-- Current Hermes Desktop with `host.profileRoutes()`, focused-session ownership,
-  shared React Query and `ctx.rest()` upload support. See the exact tested
-  upstream revision in [release verification](docs/release-readiness.md).
-- Honcho configured for each Hermes profile you want to inspect
-- Honcho 3.2.0 and Python `honcho-ai` 2.5.0 are verified targets. The existing
-  read/upload workflows are also tested with SDK 2.2.0 and 2.4.0, with optional
-  features gated by the selected backend's capabilities.
-- Node.js only for the repository checks; it is not a runtime dependency
+- Hermes 0.21.4 or newer, with Hermes Desktop.
+- The Honcho memory provider installed and configured in each profile you want
+  to inspect:
 
-Configure Honcho first if needed:
+  ```sh
+  hermes plugins install honcho
+  hermes memory setup honcho
+  ```
 
-```sh
-hermes honcho setup
-```
+- The Python `honcho-ai` SDK that the provider installs. The plugin is tested
+  with 2.2.0, 2.4.0, 2.5.0, and 2.5.1. Premises, derived conclusions, and the
+  records list in Ask need SDK 2.5 and a Honcho 3.2 or newer server. Features
+  the selected server does not support are shown as unavailable, not as empty.
 
 ## Install
-
-Install the published revision:
 
 ```sh
 hermes plugins install outpoints/hermes-honcho-plugin --enable
 ```
 
-While the repository is private, Git must be authenticated with access to it.
-
-Restart Hermes Desktop so the Python API is mounted. Unified installs appear in
-**Settings → Plugins** and remain opt-in until the **Honcho** desktop plugin is
-enabled. Standalone installs in `desktop-plugins` load immediately.
-
-For local development, install or symlink this repository at:
-
-```text
-~/.hermes/plugins/hermes-honcho-plugin
-```
-
-The directory name must remain `hermes-honcho-plugin`, matching the desktop
-plugin ID and dashboard API namespace. Enable the agent plugin with:
-
-```sh
-hermes plugins enable hermes-honcho-plugin
-```
-
-Restart Hermes Desktop after changing the Python backend. The uncompiled
-`desktop/plugin.js` can be reloaded by toggling the desktop plugin off and on.
-
-### Multiple profiles and remote gateways
-
-A unified plugin has two independent deployment surfaces:
-
-- The Desktop contribution is loaded once by the workstation running Hermes
-  Desktop.
-- The Python/API companion must be installed and enabled in every profile home
-  that will answer `ctx.rest()` requests.
-
-Installing the plugin in the default profile does not install it into named
-profiles. Install and configure each intended profile explicitly:
+The page and pane are added once, on the machine running Hermes Desktop. The
+backend must be installed and enabled in every profile you want to read,
+including profiles on remote hosts:
 
 ```sh
 hermes -p <profile> plugins install outpoints/hermes-honcho-plugin --enable
-hermes -p <profile> honcho setup
 ```
 
-For a local development checkout, link only `plugin.yaml`, `__init__.py`, and
-`dashboard/` into
-`~/.hermes/profiles/<profile>/plugins/hermes-honcho-plugin/`, then run the
-profile-scoped `plugins enable` command. Keep `desktop/plugin.js` in the local
-Desktop plugin root so the route is registered only once.
+Restart Hermes after installing so each profile's backend loads the plugin. If
+**Honcho** does not appear in the sidebar, turn it on in **Settings → Plugins**.
 
-Remote connections use the same split. Install and enable the API companion on
-the remote Hermes host for every remote profile, then add that host under
-**Settings → Gateways** as SSH or a remote gateway. Hermes routes `ctx.rest()`
-through the selected `(connection, profile)`; the renderer never receives SSH
-or Honcho credentials. The remote machine must be able to reach its configured
-Honcho endpoint. There is intentionally no fallback to a local profile when a
-remote companion is missing.
+## What it reads and sends
 
-Restart the affected local or remote Hermes backend after installation so its
-plugin API routes mount.
+- Requests go only to the Honcho server each profile is already configured to
+  use, through that profile's Honcho provider. The plugin has no telemetry and
+  makes no other network calls.
+- It reads the focused chat's title and working directory from that profile's
+  Hermes session database, read-only, to find the Honcho session.
+- It never reads, returns, or stores Honcho credentials. Hermes resolves them.
+- Reads never create Honcho workspaces, sessions, peers, or scopes.
+- **Ask** starts a reasoning call on your Honcho server, which may use credits.
+  Nothing runs until you ask.
+- Writes happen only through the two confirmed actions above.
 
-SSH aliases do not need to match the remote profile name. The plugin obtains
-the host's authoritative route using `host.profileRoutes()` and sends the
-remote `targetProfile` in both the URL selector and request provenance. The
-confirmation strip shows the backend profile, not the workstation alias.
-Unknown routes, unresolved saved-session ownership and focus changes fail
-closed before dispatch. Confirmed uploads refresh route discovery and reject
-a changed target. Hermes still owns the tunnel, authentication and routing.
+## Limits
 
-For an unpublished candidate, copy the same candidate files to the workstation
-and remote companion. Installing from GitHub does not include uncommitted local
-changes. Follow the [Windows SSH checklist](docs/windows-ssh-testing.md).
-
-## Development
-
-Run all static contract and backend unit checks:
-
-```sh
-./scripts/check.sh
-hermes plugins doctor --ci .
-```
-
-The check script detects managed Hermes launchers and runs Python checks through
-`hermes --run-module`, preserving the host's composed dependencies. Legacy
-virtualenv installs and an explicit `HERMES_PYTHON` remain supported.
-See the [release verification record](docs/release-readiness.md)
-for tested versions, privacy checks, UI coverage and deployment limitations.
-
-The plugin deliberately has no frontend build step and adds no third-party
-runtime framework. `desktop/plugin.js` uses only the Hermes-provided SDK, React
-runtime, UI components, and shared React Query cache. `dashboard/plugin_api.py`
-uses FastAPI, Hermes's built-in Honcho configuration/session resolver, and the
-installed `honcho-ai` SDK.
-
-### Honcho 3.2 / SDK 2.5 compatibility
-
-This plugin uses the **Python** `honcho-ai` SDK supplied by Hermes, not the
-dashboard's TypeScript `@honcho-ai/sdk`. Installing or updating this plugin does
-not upgrade Hermes's SDK or restart a local/remote backend.
-
-- Context unwraps SDK summary and representation models, handles absent cards,
-  and does not invent a token total when the SDK does not provide one.
-- Scope search uses SDK 2.5's non-creating `get_scope`. SDK 2.4 falls back to
-  paginated list verification, never the creating `scope()` helper.
-- Conclusion rows display `source_ids` as **parent conclusion IDs**, not source
-  messages, and expose `times_derived` when the SDK supplies it. This is not a
-  full parent/backlink browser.
-- Chat/evidence, service-wide deriver backlog, and collector call traces remain
-  features of the separate dashboard. Compatibility does not mean feature
-  parity, and the plugin does not require that dashboard at runtime.
-
-`tests/test_sdk_compatibility.py` exercises the real installed SDK over an
-offline HTTP fixture transport, including exact upload readback, scoped search,
-permission failures and 503 responses. See the
-[compatibility record](docs/compatibility.md) for the test matrix, live-read
-verification, and how to repeat the isolated SDK checks.
-
-The backend exposes profile-scoped `POST` routes for `/snapshot`, `/messages`,
-`/conclusions`, `/context`, `/search`, `/scopes`, `/activity`, and
-`/upload-ticket`, plus a multipart `/uploads/{ticket}` route. Request bodies
-reject unknown fields and cap page sizes, context budgets, search lengths, and
-result counts. Synchronous SDK operations execute outside the event loop under
-an explicit timeout.
-
-All discovery paths remain read-only. Before any scoped SDK read, the backend
-verifies that the configured workspace already exists, avoiding SDK paths that
-can create workspaces or scopes. The only mutation is an explicitly confirmed
-upload to the exact existing focused session. A two-minute one-time ticket binds
-that write to its connection, profile, session, and configured user peer. The
-backend then reads every created message ID back from that session before
-reporting verified success. It never returns credentials or credential-bearing
-URLs.
-
-### File-size limits
-
-The plugin does not impose or advertise an undocumented 10 MB limit. Honcho's
-current server source defines configurable `MAX_FILE_SIZE` with a default of
-5,242,880 bytes (5 MiB). A self-hosted deployment may use another value, so the
-dialog identifies 5 MiB as Honcho's default and leaves authoritative acceptance
-to the selected backend. Honcho separately chunks extracted text near 49,500
-characters to remain within its 50,000-character message limit; that character
-limit is not a file-byte limit.
-
-Hermes currently cannot forward multipart uploads to OAuth-gated remote
-backends. Local, SSH, and token-authenticated remote paths use `ctx.rest()`;
-OAuth upload attempts fail explicitly rather than falling back to another
-profile or connection.
-
-See [docs/architecture.md](docs/architecture.md) for runtime flow, endpoint
-contracts, isolation, privacy boundaries, installed-SDK capability handling,
-and the Phase 2 backlog. The desktop implementation follows the
-[official Hermes Desktop Plugin SDK guide](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk).
-
-## Package layout
-
-```text
-desktop/plugin.js          Hermes Desktop SDK entry point
-dashboard/manifest.json    API-only dashboard manifest
-dashboard/plugin_api.py    Profile-scoped Honcho metrics adapter
-docs/architecture.md       Architecture decision and data flow
-scripts/check.sh            Repository checks
-tests/                      Backend and SDK contract tests
-```
+- Honcho's default upload limit is 5 MiB. Self-hosted servers can set another
+  value, and the server makes the final call. The plugin adds no limit of its own.
+- Hermes cannot forward file uploads to OAuth-protected remote gateways yet.
+  Uploads to those fail with an error instead of going anywhere else.
+- Confirmation tickets live in the backend process for two minutes. Restarting
+  Hermes in between means confirming again.
+- Exact per-reply recall, service-wide queue metrics, and fleet administration
+  are out of scope.
 
 ## Troubleshooting
 
-- **“Honcho status is unavailable”**: enable the agent plugin and restart
-  Hermes so the backend route mounts.
-- **“Honcho is not configured”**: run `hermes honcho setup` in that profile.
-- **Workspace metrics but no current chat**: the session may not have written a
-  message yet, or the focused chat belongs to another Hermes connection.
-- **A metric is unavailable**: open Diagnostics on the Honcho page. Other
-  metrics continue updating when one Honcho endpoint fails.
+| What you see | What to do |
+| --- | --- |
+| Can't reach the Honcho plugin | Enable `hermes-honcho-plugin` in that profile and restart Hermes. |
+| Honcho isn't set up for this profile | Run `hermes -p <profile> memory setup honcho`. |
+| No Honcho session for this chat | The chat is a new draft. Send a message, or open a saved chat. |
+| This chat isn't in Honcho yet | Hermes saves the session after the first message. |
+| This chat is on another connection | Switch Hermes to that connection to read it. |
+| Partial | One Honcho read failed. Status lists which one. The rest still updates. |
+
+## Development
+
+The Desktop file `desktop/plugin.js` is plain ESM that Hermes loads without a
+build step. The backend is `dashboard/plugin_api.py`, a FastAPI router that uses
+the installed Honcho provider and SDK.
+
+```sh
+./scripts/check.sh                 # JavaScript and Python tests
+hermes plugins validate . --json
+hermes plugins doctor --ci .
+```
+
+These need a Hermes source checkout with Desktop built
+(`HERMES_SOURCE=/path/to/hermes-agent`):
+
+```sh
+node scripts/check-ui-surface.mjs   # SDK imports and shipped CSS classes exist in the host
+node scripts/check-host.mjs         # real host REST bridge and profile routing, offline
+node scripts/screenshots.mjs        # synthetic-data screenshots and accessibility checks
+node scripts/catalog-art.mjs        # catalog banner and gallery
+```
+
+`check-host.mjs` and `screenshots.mjs` also need `SCREENSHOT_WORK_DIR` set to a
+scratch directory. Every screenshot uses invented demonstration data.
+
+More detail: [architecture](docs/architecture.md),
+[compatibility](docs/compatibility.md),
+[release verification](docs/release-readiness.md),
+[screenshots](docs/screenshots/README.md),
+[catalog submission](docs/catalogue.md).
 
 ## License
 

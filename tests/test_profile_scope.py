@@ -26,6 +26,10 @@ from test_plugin_api import FakeClient, FakePage, plugin_api
 
 class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # Discover the installed provider before entering the synthetic homes.
+        # Catalog providers no longer have a plugins.memory.honcho.client import.
+        honcho_client = plugin_api._honcho_client_module()
+        provider_dir = Path(honcho_client.__file__).parent
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / ".hermes"
@@ -37,6 +41,8 @@ class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
         }, clear=True))
         for name, home in self.homes.items():
             home.mkdir(parents=True, exist_ok=True)
+            (home / "plugins").mkdir()
+            (home / "plugins" / "honcho").symlink_to(provider_dir, target_is_directory=True)
             (home / ".env").write_text(f"HONCHO_API_KEY=fixture-{name}\n")
             (home / "config.yaml").write_text(
                 "plugins:\n  enabled: [hermes-honcho-plugin]\n  disabled: []\n"
@@ -60,7 +66,6 @@ class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
         token = set_hermes_home_override(None)
         self.addCleanup(reset_hermes_home_override, token)
 
-        from plugins.memory.honcho import client as honcho_client
         self.honcho = honcho_client
         self.seen = []
 
@@ -73,6 +78,7 @@ class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config.ai_peer, f"agent-{name}")
             self.seen.append(name)
             client = FakeClient()
+            setattr(client, "_http", SimpleNamespace(max_retries=2, timeout=10))
             client.workspaces = lambda filters=None, page=1, size=50: FakePage([config.workspace_id], total=1)
             # A new draft has no Honcho session. No get-or-create operation exists.
             client.sessions = lambda filters=None, page=1, size=50: FakePage([], total=0)
@@ -121,6 +127,17 @@ class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(self.seen, [])
 
+    async def test_correction_ticket_cannot_cross_the_resolved_backend_profile(self):
+        focus = plugin_api.SnapshotRequest(profile='research', stored_session_id='same-id').model_dump()
+        token = 'synthetic-profile-bound-correction'
+        plugin_api._correction_tickets[token] = {'focus': focus, 'expires_at': 10**12}
+        self.addCleanup(plugin_api._correction_tickets.pop, token, None)
+        response = await self.post('default', {'stored_session_id': 'same-id', 'ticket': token}, 'corrections')
+        self.assertEqual(response.json()['state'], 'ticket_mismatch', response.text)
+        self.assertEqual(response.json()['outcome'], 'rejected')
+        self.assertEqual(self.seen, [])
+        self.assertNotIn(token, plugin_api._correction_tickets)
+
     async def test_host_rejects_invalid_missing_and_disabled_profile_routes(self):
         for route, status in (("../research", 400), ("missing", 404)):
             with self.subTest(route=route):
@@ -161,6 +178,9 @@ class ProfileScopeTests(unittest.IsolatedAsyncioTestCase):
         endpoints = {
             "snapshot": {}, "messages": {}, "conclusions": {}, "context": {},
             "search": {"query": "fixture"}, "scopes": {}, "activity": {},
+            "capabilities": {}, "conclusion-search": {"query": "fixture"},
+            "conclusion-detail": {"conclusion_id": "fixture"}, "ask": {"query": "fixture"},
+            "correction-ticket": {"content": "fixture"},
             "upload-ticket": {"filename": "fixture.txt", "content_type": "text/plain", "size": 1, "source_kind": "file"},
         }
         original_loader = plugin_api._load_hermes_session_metadata

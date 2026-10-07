@@ -796,6 +796,25 @@ class ConclusionTests(unittest.TestCase):
         self.assertTrue(result["items"][0]["belongs_to_current_session"])
         self.assertEqual(result["total"], 14)
 
+    def test_conclusions_keep_honchos_newest_first_order(self):
+        # Honcho lists conclusions newest first; reverse=True means oldest
+        # first. Messages are the opposite, so this must not be "fixed" to match.
+        peers = [FakePeer("human"), FakePeer("hermes")]
+        session = FakeSession()
+        session.peers = lambda: peers
+        request = plugin_api.ConclusionsRequest(
+            profile="default", focused_profile="default", stored_session_id="stored-123",
+            cwd="/work/hermes-honcho-plugin", scope="all", page=1, size=10,
+        )
+        result = plugin_api._collect_conclusions(
+            request,
+            config_factory=FakeConfig,
+            client_factory=lambda _: FakeClient(session=session),
+            session_metadata_loader=lambda _: {},
+        )
+        self.assertTrue(result["ok"])
+        self.assertIs(peers[1].conclusion_scope.calls[-1]["reverse"], False)
+
 
 class MessageTests(unittest.TestCase):
     def test_messages_are_bounded_paginated_and_metadata_is_redacted(self):
@@ -1043,6 +1062,12 @@ class FailureAndBoundaryTests(unittest.TestCase):
                 "/activity",
                 "/upload-ticket",
                 "/uploads/{ticket}",
+                "/capabilities",
+                "/conclusion-search",
+                "/conclusion-detail",
+                "/ask",
+                "/correction-ticket",
+                "/corrections",
             },
         )
 

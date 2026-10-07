@@ -1,5 +1,143 @@
 # Release verification
 
+## 0.4.0, 2026-10-07
+
+### Changes
+
+- Redesigned the Desktop UI on the host's own primitives: five sections
+  (Memory, Ask, Messages, Context, Status) in underline text tabs like the
+  Capabilities page, a section menu in narrow panes, a conclusion list with an
+  inspector for premises and derived conclusions, `PanelEmpty` states, and one
+  gate state that names the next step when nothing can be read.
+- Fixed "Blocked" for chats from another profile while the sidebar shows all
+  profiles. The plugin now reads such a chat in its owner profile through an
+  explicit `?profile=` selector. Chats on another connection, or with ambiguous
+  ownership, stay blocked with a specific reason.
+- Drafts and unsaved chats show one clear state instead of a set of failed reads.
+- Conclusions are listed newest first. The backend had sent `reverse=true`,
+  which Honcho reads as oldest first.
+- Host navigation is recognized by its effect on the route, not by reading host
+  `data-tour` markup, which catalog rule 8 forbids.
+- Version 0.4.0 everywhere. The backend constant had still said 0.3.0.
+- `requires_hermes: ">=0.21.4"` in the catalog entry. See
+  [compatibility.md](compatibility.md) for how the floor was derived.
+
+### Verification
+
+- `./scripts/check.sh`: 69 JavaScript and 94 Python tests pass.
+- The Python suite also passes under `honcho-ai` 2.2.0, 2.4.0, 2.5.0 and 2.5.1
+  overlays through the managed launcher.
+- `scripts/check-ui-surface.mjs`: all 40 SDK imports and 8 icons exist in Hermes
+  v2026.8.31, v2026.9.24 and current main, and all 110 utility classes exist in
+  the host's shipped stylesheet.
+- `scripts/check-host.mjs`: 15 SSH-alias requests and 6 cross-profile local
+  requests through the real host REST bridge and Electron path builders,
+  offline. No live SSH connection.
+- `scripts/screenshots.mjs`: 26 synthetic captures and 13 axe WCAG A/AA audits
+  with 0 violations, 0 browser errors, 0 external requests and 0 uploads.
+  `verification.json` matches the committed `desktop/plugin.js`.
+- `hermes plugins validate . --json`: every check passes, the security scan is
+  `safe`, and there are no warnings. `hermes plugins doctor --ci .` passes.
+- The catalog entry passes upstream `validate_plugin_catalog.py` with a stand-in
+  SHA. That is a schema check only.
+
+### Live checks
+
+- In the running macOS app, **Reload desktop plugins** loaded the new UI. A new
+  draft showed the single "No Honcho session" state.
+- The repository owner confirmed in the running app that a chat from another
+  profile is no longer blocked.
+- The newest-first conclusion order is a backend change. Running Hermes
+  backends keep the old code until they restart. No backend was restarted for
+  this release.
+- Live Windows/SSH acceptance and live writes remain untested.
+
+### Privacy
+
+- Current files: a pattern scan for names, contact details, home paths, private
+  network addresses, profile names and emails found nothing outside
+  reserved-domain test fixtures. Gitleaks found no secrets.
+- Images: OCR of all 26 screenshots and 7 catalog images found only synthetic
+  identifiers. No PNG carries text metadata.
+- History: the 7 reachable commits and the `v0.1` tag are clean. GitHub still
+  served the 5 commits from before the September history rewrite by SHA. Those
+  contained a first name in test fixtures, a home-directory path and private
+  profile names. Publication recreated the repository from the clean history,
+  so those commits are not part of it.
+
+## Inspector focus regression fix, 2026-09-29
+
+- Fixed loss of the inspected conversation when Honcho takes pane focus or
+  opens its main page. The frontend retains the exact inspection scope only
+  during plugin interaction, without changing backend routing or session lookup.
+- `./scripts/check.sh`: 58 JavaScript and 88 Python tests pass, including 13
+  focus-retention tests for navigation, drafts, unresolved ownership, stale
+  requests, scope changes and disposal.
+- Browser regression passes with native controls and synthetic host handoffs:
+  tile to another primary, portalled dropdown selection, sidebar navigation,
+  empty primary selection, page remount, refresh and upload-dialog cancellation.
+  Request bodies retain the original durable session throughout these actions.
+- The full synthetic browser suite also passes its five accessibility audits,
+  with no browser errors, external requests or uploads. The gallery below
+  records the earlier workbench capture, not this subsequent source revision.
+- Actual-host transport checks still pass (15 requests with synthetic IPC).
+  No backend change, restart, dependency upgrade or live memory write was needed.
+- The installed frontend links to this checkout. Executed **Reload desktop
+  plugins** in the running macOS app, selected the current project conversation,
+  refreshed its side panel, opened the native section dropdown and selected
+  Messages, then opened the main Honcho page from the sidebar. Captures confirmed
+  the same resolved Honcho session and populated message stream in both surfaces.
+  The dropdown required foreground pointer delivery after background AXPress did
+  not open it. This is a live local read-only smoke test, not Windows/SSH or live
+  mutation acceptance. Private live captures remain outside the repository.
+  No backend restart or manual test-memory write was performed.
+
+## Unreleased memory workbench, 2026-09-29
+
+Implementation and offline verification are complete in the working tree.
+The manifest remains 0.3.1, not a newly published release. No commit, tag,
+catalogue submission, SDK upgrade, or backend restart was performed.
+
+- `./scripts/check.sh`: 45 JavaScript and 88 Python tests.
+- Full Python suite: passes with installed `honcho-ai` 2.2.0 and isolated
+  overlays 2.4.0, 2.5.0, and 2.5.1 on the same managed Python 3.14.7 runtime.
+- Actual Hermes host transport: 15 requests through the real REST bridge and
+  profile mapper with synthetic IPC, including all new endpoint families.
+- Plugin validation and doctor pass. Existing warnings remain: missing
+  `hermes-provider-switcher` entry-point module in the host, and a scanner
+  caution in the historical implementation plan. Neither is a plugin failure.
+- Real SDK HTTP fixtures verify scoped search, exact/partial provenance,
+  explicit questions, optional evidence, target-bound additive correction,
+  exact readback, and no retry after an ambiguous write.
+- Browser tests pass for search and questions, cancelling without requests,
+  confirmed synthetic correction, unknown outcomes, duplicate-submit and
+  pending-dismissal guards, focus-switch races, unsupported capabilities, and
+  disconnected state. No live Honcho writes or reasoning calls were used.
+- Eighteen synthetic screenshots use the actual plugin, native SDK controls,
+  shipped CSS, and Nous themes. Five axe WCAG A/AA audits report no violations.
+  The harness reports no browser errors, external requests, or uploads.
+  See `docs/screenshots/verification.json` for source hash and host revision.
+- Desktop/narrow light and dark screenshots, correction, provenance, and
+  question evidence were visually reviewed inline by the main assistant.
+  An earlier two-subagent delegation was interrupted. The remaining work,
+  final verification, and visual review were completed in the main chat.
+  The existing native visual system was retained.
+
+### Activation boundary
+
+On-disk changes do not establish activation in a running Python backend.
+Deploy the same reviewed candidate to each intended API companion, then restart
+only those backends with approval. Reload the Desktop contribution separately
+if its watcher has not picked up the file. No unrelated profile was modified.
+Optional graph/evidence features stay disabled on the installed SDK 2.2.0.
+Basic questions, semantic conclusion search, inspection, and correction do not
+require upgrading Hermes's SDK.
+
+Live Windows/SSH acceptance, screen-reader testing, and any disposable-workspace
+end-to-end mutation test remain outside this offline verification. Do not use
+personal memory for test writes or screenshot fixtures. The historical privacy
+audits below are not a new audit of all current changes or remote history.
+
 ## 0.3.1 candidate, 2026-09-29
 
 This is a test candidate, not a catalogue release. Live Windows-to-SSH testing

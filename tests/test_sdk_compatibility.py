@@ -91,6 +91,8 @@ class SDKCompatibilityTests(unittest.TestCase):
         if (request.method, path) == ("POST", f"{ROOT}/conclusions/list"):
             self.assertEqual(body["filters"]["observer_id"], "agent")
             self.assertEqual(body["filters"]["observed_id"], "human")
+            # Honcho's default is newest first. reverse=true would show the oldest.
+            self.assertNotEqual(request.url.params.get("reverse"), "true")
             return page([self.conclusion])
         if (request.method, path) == ("GET", f"{SESSION_ROOT}/context"):
             self.assertEqual(request.url.params["peer_target"], "human")

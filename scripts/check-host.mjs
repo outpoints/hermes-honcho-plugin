@@ -27,7 +27,7 @@ import plugin,{useFocusScope,requestForFocus} from 'fixture-plugin';
 import {host,atom,queryClient} from '@hermes/plugin-sdk';
 import {pluginRest} from ${JSON.stringify(join(src, 'api/plugins.ts'))};
 import {setApiRequestProfile,setApiRequestConnection} from ${JSON.stringify(join(src, 'api/client.ts'))};
-import {pathForRegistryBackendRequest} from ${JSON.stringify(join(source, 'apps/desktop/electron/connection-config.ts'))};
+import {pathForRegistryBackendRequest,resolveProfileApiRequest} from ${JSON.stringify(join(source, 'apps/desktop/electron/connection-config.ts'))};
 import {buildRegistryProfileRoutes} from ${JSON.stringify(join(source, 'apps/desktop/electron/plugin-profile-routes.ts'))};
 const values={profile:'desktop-alias',focusedSessionProfile:'desktop-alias',focusedSessionOwner:{connectionId:'demo-ssh',profile:'desktop-alias'},connectionId:'demo-ssh',focusedStoredSessionId:'demo-session',focusedSessionId:'demo-runtime',cwd:'/srv/demo',busy:false,awaitingResponse:false};
 host.state=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,atom(v)]));
@@ -43,7 +43,7 @@ globalThis.window={hermesDesktop:{api:async request=>{
 }}};
 plugin.register({rest:(path,opts)=>pluginRest(plugin.id,path,opts),registerMany(){},onDispose(){}});
 const focus=useFocusScope();
-for(const endpoint of ['/snapshot','/messages','/conclusions','/context','/search','/scopes','/activity','/upload-ticket']) await requestForFocus(focus,endpoint,{method:'POST',body:focus.body});
+for(const endpoint of ['/snapshot','/messages','/conclusions','/context','/search','/scopes','/activity','/upload-ticket','/capabilities','/conclusion-search','/conclusion-detail','/ask','/correction-ticket','/corrections']) await requestForFocus(focus,endpoint,{method:'POST',body:focus.body});
 const bytes=new TextEncoder().encode('Synthetic SSH upload fixture').buffer;
 await requestForFocus({...focus,backendProfile:'research'},'/uploads/demo-ticket',{method:'POST',upload:{filename:'demo.txt',contentType:'text/plain',bytes},timeoutMs:125000});
 assert.equal(seen.at(-1).upload.bytes,bytes); assert.equal(seen.at(-1).timeoutMs,125000);
@@ -51,8 +51,25 @@ const count=seen.length;
 window.hermesDesktop.api=async()=>{throw new Error('Remote companion missing')};
 await assert.rejects(requestForFocus(focus,'/snapshot',{method:'POST',body:focus.body}),/Remote companion missing/);
 assert.equal(seen.length,count);
+// "All profiles" view: the window stays on 'default' while the focused chat
+// belongs to local profile 'research'. The ambient request scope is still
+// 'default', so the owner must survive as an explicit ?profile= selector.
 queryClient.clear();
-console.log(JSON.stringify({host_transport_checks:count,ssh_alias:'desktop-alias -> research',multipart_bytes_preserved:true,missing_companion_no_fallback:true,live_ssh_tested:false}));
+setApiRequestConnection('local'); setApiRequestProfile('default');
+for (const [key,value] of Object.entries({profile:'default',connectionId:'local',focusedSessionProfile:'research',focusedSessionOwner:{connectionId:'local',profile:'research'}})) host.state[key].set(value);
+const crossProfile=[];
+window.hermesDesktop.api=async request=>{
+ assert.equal(request.profile,'default');
+ for (const path of [pathForRegistryBackendRequest(request.path,request.profile,{mode:'local',sharedPrimary:true}),resolveProfileApiRequest(request.profile,request.path).requestPath]) assert.equal(new URL(path,'http://fixture').searchParams.get('profile'),'research');
+ if(request.body){assert.equal(request.body.profile,'research');assert.equal(request.body.focused_profile,'research');}
+ crossProfile.push(request); return {ok:true};
+};
+const owned=useFocusScope();
+assert.equal(owned.routeMismatch,false);
+for(const endpoint of ['/snapshot','/conclusions','/ask','/correction-ticket','/upload-ticket']) await requestForFocus(owned,endpoint,{method:'POST',body:owned.body});
+await requestForFocus({...owned,backendProfile:'research'},'/uploads/demo-ticket',{method:'POST',upload:{filename:'demo.txt',contentType:'text/plain',bytes}});
+queryClient.clear();
+console.log(JSON.stringify({host_transport_checks:count,ssh_alias:'desktop-alias -> research',multipart_bytes_preserved:true,missing_companion_no_fallback:true,cross_profile_local_checks:crossProfile.length,cross_profile_owner:'default window -> research chat',live_ssh_tested:false}));
 `
 try {
   await build({ stdin: { contents: entry, resolveDir: repo }, outfile: join(work, 'check.mjs'), bundle: true, platform: 'node', format: 'esm', alias: { '@': src }, nodePaths: [join(source, 'node_modules')], plugins: [{ name: 'host-fixtures', setup(builder) {

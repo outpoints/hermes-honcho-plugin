@@ -1,10 +1,20 @@
 {
   "synthetic": true,
-  "host_commit": "39faafb61688282a372ff2d59191581588e9a003",
-  "plugin_sha256": "a605b555ae0f6d5c1e624523564274c9988e5765e0514907612fb0d6ed2011ca",
+  "host_commit": "ee8dd6c886326db4b468c2ba18d9409f123da827",
+  "plugin_sha256": "743487b2dd927e5abbc1e70453506102fa3060495d6bab3ad7d81a71bbf6447c",
   "captures": [
     {
-      "file": "overview-dark.png",
+      "file": "memory-dark.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "provenance.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "memory-search.png",
       "width": 2400,
       "height": 1600
     },
@@ -14,12 +24,12 @@
       "height": 1600
     },
     {
-      "file": "conclusions.png",
+      "file": "context.png",
       "width": 2400,
       "height": 1600
     },
     {
-      "file": "context.png",
+      "file": "diagnostics.png",
       "width": 2400,
       "height": 1600
     },
@@ -34,22 +44,173 @@
       "height": 1600
     },
     {
-      "file": "overview-light.png",
+      "file": "ask-memory.png",
       "width": 2400,
       "height": 1600
     },
     {
-      "file": "banner.png",
-      "width": 3200,
+      "file": "correction.png",
+      "width": 2400,
       "height": 1600
     },
     {
+      "file": "memory-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "provenance-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "correction-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "ask-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "search-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "status-light.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "memory-wide.png",
+      "width": 3200,
+      "height": 2000
+    },
+    {
       "file": "memory-pane.png",
-      "width": 720,
-      "height": 2400
+      "width": 760,
+      "height": 2200
+    },
+    {
+      "file": "memory-pane-detail.png",
+      "width": 760,
+      "height": 2200
+    },
+    {
+      "file": "memory-narrow-light.png",
+      "width": 760,
+      "height": 2200
+    },
+    {
+      "file": "memory-pane-detail-light.png",
+      "width": 760,
+      "height": 2200
+    },
+    {
+      "file": "unsupported.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "unknown-correction.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "cross-profile.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "draft.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "disconnected.png",
+      "width": 2400,
+      "height": 1600
+    }
+  ],
+  "accessibility": [
+    {
+      "name": "memory-dark",
+      "violations": []
+    },
+    {
+      "name": "provenance",
+      "violations": []
+    },
+    {
+      "name": "status",
+      "violations": []
+    },
+    {
+      "name": "add-to-session",
+      "violations": []
+    },
+    {
+      "name": "ask-memory",
+      "violations": []
+    },
+    {
+      "name": "correction",
+      "violations": []
+    },
+    {
+      "name": "memory-light",
+      "violations": []
+    },
+    {
+      "name": "provenance-light",
+      "violations": []
+    },
+    {
+      "name": "ask-light",
+      "violations": []
+    },
+    {
+      "name": "status-light",
+      "violations": []
+    },
+    {
+      "name": "memory-narrow-light",
+      "violations": []
+    },
+    {
+      "name": "draft",
+      "violations": []
+    },
+    {
+      "name": "disconnected",
+      "violations": []
     }
   ],
   "browser_errors": [],
   "external_requests": [],
-  "upload_requests": 0
+  "upload_requests": 0,
+  "exercised": [
+    "landing does not reason or write",
+    "every section",
+    "conclusion search submits on Enter only",
+    "message search",
+    "premise inspection",
+    "explicit memory question",
+    "accessed record opens in the inspector",
+    "correction cancel without requests",
+    "confirmed synthetic correction",
+    "wide, pane, and inspector layouts in light and dark",
+    "unsupported capabilities",
+    "unknown write without retry",
+    "pending write dismissal and duplicate-submit guard",
+    "focus change suppresses stale answers and prevents confirmed write",
+    "another local profile reads in its owner profile",
+    "draft chat without a session",
+    "disconnected state",
+    "pane focus handoff retains inspected tile",
+    "portalled menu preserves inspection target",
+    "host sidebar navigation preserves inspection target without reading host markup"
+  ]
 }

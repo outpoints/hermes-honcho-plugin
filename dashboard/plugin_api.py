@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
 import importlib.metadata
 import inspect
@@ -10,7 +11,7 @@ import re
 import secrets
 import threading
 import time
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
 
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.4.0"
 REQUEST_TIMEOUT_SECONDS = 20
 UPLOAD_TIMEOUT_SECONDS = 120
 UPLOAD_TICKET_TTL_SECONDS = 120
@@ -26,6 +27,7 @@ HONCHO_DEFAULT_MAX_FILE_SIZE = 5_242_880
 SUPPORTED_UPLOAD_TYPES = {"application/json", "application/pdf"}
 _upload_ticket_lock = threading.Lock()
 _upload_tickets: dict[str, dict[str, Any]] = {}
+_correction_tickets: dict[str, dict[str, Any]] = {}
 
 
 def _store_upload_ticket(payload: dict[str, Any]) -> str:
@@ -112,6 +114,51 @@ class ScopesRequest(SnapshotRequest):
 
     page: int = Field(default=1, ge=1, le=10_000)
     size: int = Field(default=25, ge=1, le=100)
+
+
+class ConclusionSearchRequest(SnapshotRequest):
+    query: str = Field(min_length=1, max_length=2000)
+    scope: Literal["current", "all"] = "current"
+    limit: int = Field(default=20, ge=1, le=50)
+
+    @field_validator("query")
+    @classmethod
+    def nonblank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value.strip()
+
+
+class ConclusionDetailRequest(SnapshotRequest):
+    conclusion_id: str = Field(min_length=1, max_length=256, pattern=r"^[^\s/\\]+$")
+
+
+class AskRequest(SnapshotRequest):
+    query: str = Field(min_length=1, max_length=2000)
+    scope: Literal["session", "workspace"] = "session"
+    reasoning_level: Literal["minimal", "low", "medium", "high"] = "low"
+    include_evidence: bool = False
+
+    @field_validator("query")
+    @classmethod
+    def nonblank_query(cls, value: str) -> str:
+        return ConclusionSearchRequest.nonblank_query(value)
+
+
+class CorrectionTicketRequest(SnapshotRequest):
+    content: str = Field(min_length=1, max_length=4000)
+    source_conclusion_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[^\s/\\]+$")
+
+    @field_validator("content")
+    @classmethod
+    def nonblank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A corrective fact is required.")
+        return value.strip()
+
+
+class CorrectionRequest(SnapshotRequest):
+    ticket: str = Field(min_length=1, max_length=128)
 
 
 class ActivityRequest(SnapshotRequest):
@@ -469,6 +516,19 @@ def _resolve_focused_session(
     return current_session
 
 
+def _honcho_client_module() -> Any:
+    """Resolve Honcho inside the request's profile, including catalog installs."""
+    from plugins import memory
+
+    resolver = getattr(memory, "import_provider_module", None)
+    if resolver is not None:
+        # Let Hermes own provider precedence and its per-source module namespace.
+        # A resolution failure must not fall back to another profile's provider.
+        return resolver("honcho", "client")
+    # Compatibility with Hermes releases that only shipped bundled providers.
+    return importlib.import_module("plugins.memory.honcho.client")
+
+
 def _prepare_read(
     request: SnapshotRequest,
     *,
@@ -478,13 +538,9 @@ def _prepare_read(
 ) -> tuple[dict[str, Any], Any | None, Any | None, Any | None]:
     result = _operation_base(request)
     if config_factory is None or client_factory is None:
-        from plugins.memory.honcho.client import (
-            HonchoClientConfig,
-            get_honcho_client,
-        )
-
-        config_factory = config_factory or HonchoClientConfig.from_global_config
-        client_factory = client_factory or get_honcho_client
+        honcho = _honcho_client_module()
+        config_factory = config_factory or cast(Callable[[], Any], honcho.HonchoClientConfig.from_global_config)
+        client_factory = client_factory or cast(Callable[[Any], Any], honcho.get_honcho_client)
 
     config = config_factory()
     result["workspace_id"] = getattr(config, "workspace_id", None)
@@ -1527,8 +1583,11 @@ def _collect_conclusions(
                     "Installed honcho-ai cannot scope conclusions to the current session."
                 )
             kwargs["session"] = result["session_id"]
+        # Honcho lists conclusions newest first; `reverse=True` means oldest
+        # first (unlike messages, whose default is oldest first). State the
+        # default explicitly so an SDK default change cannot flip the order.
         if _supports_parameter(list_conclusions, "reverse"):
-            kwargs["reverse"] = True
+            kwargs["reverse"] = False
         page = list_conclusions(**kwargs)
         items = getattr(page, "items", None)
         if not isinstance(items, list):
@@ -1559,6 +1618,303 @@ def _collect_conclusions(
     return result
 
 
+def _workbench_target(request: SnapshotRequest, **factories: Any) -> tuple:
+    factory = factories.get("client_factory")
+    if factory is None:
+        factory = _honcho_client_module().get_honcho_client
+
+    def isolated_client(config: Any) -> Any:
+        # The Hermes client is cached. Change retry policy on request-local
+        # SDK wrappers only, never its shared transport or credentials.
+        client = copy.copy(factory(config))
+        client._http = copy.copy(client._http)
+        client._http.max_retries = 0
+        client._http.timeout = 15
+        return client
+
+    result, config, client, session = _prepare_read(
+        request, config_factory=factories.get("config_factory"),
+        client_factory=isolated_client,
+        session_metadata_loader=factories.get("session_metadata_loader"),
+    )
+    observer = scope = None
+    result["target"] = {
+        "workspace_id": result.get("workspace_id"),
+        "session_id": result.get("session_id"),
+        "observer_id": getattr(config, "ai_peer", None),
+        "observed_id": getattr(config, "peer_name", None),
+    }
+    if session is not None:
+        try:
+            peers = {str(peer.id): peer for peer in session.peers()}
+            observer_id, observed_id = result["target"]["observer_id"], result["target"]["observed_id"]
+            if observer_id not in peers or observed_id not in peers:
+                raise ValueError("The configured observer and user must be attached to the Honcho session.")
+            observer = peers[observer_id]
+            scope = observer.conclusions_of(observed_id)
+        except Exception as exc:
+            _workbench_error(result, exc)
+    return result, client, observer, scope
+
+
+def _workbench_error(result: dict, exc: Exception, state: str = "unavailable") -> dict:
+    result.update(ok=False, state=state)
+    result["errors"].append({"scope": "memory", "message": _safe_error(exc)})
+    return result
+
+
+def _checked_conclusion(item: Any, result: dict, *, expected_id: str | None = None, session_only: bool = False) -> dict:
+    payload = _conclusion_payload(item, result["session_id"])
+    target = result["target"]
+    if (not payload["id"] or payload["observer_id"] != target["observer_id"]
+            or payload["observed_id"] != target["observed_id"]
+            or (expected_id is not None and payload["id"] != expected_id)
+            or (session_only and payload["source_session_id"] != target["session_id"])):
+        raise ValueError("Honcho returned a conclusion outside the requested identity or scope.")
+    return payload
+
+
+def _collect_conclusion_search(request: ConclusionSearchRequest, **factories: Any) -> dict:
+    result, _client, _observer, scope = _workbench_target(request, **factories)
+    result.update(items=[], total=None, query=request.query, scope=request.scope)
+    if scope is None:
+        return result
+    try:
+        operation = getattr(scope, "query", None)
+        if not callable(operation) or not _supports_parameter(operation, "filters"):
+            return _workbench_error(result, ValueError("This SDK cannot safely scope conclusion search."), "unsupported_sdk")
+        items = operation(request.query, top_k=request.limit,
+                          filters={"session_id": result["session_id"]} if request.scope == "current" else {})
+        if not isinstance(items, list) or len(items) > request.limit:
+            raise ValueError("Honcho returned a malformed or unbounded conclusion search.")
+        result["items"] = [_checked_conclusion(item, result, session_only=request.scope == "current") for item in items]
+    except Exception as exc:
+        _workbench_error(result, exc)
+    return result
+
+
+def _server_supports_evidence(client: Any) -> bool:
+    # Version metadata has no creating SDK helper. The selected SDK transport
+    # preserves host authentication. Unknown servers never receive new flags.
+    try:
+        document = client._http.get("/openapi.json", timeout=3)
+        version = document.get("info", {}).get("version", "")
+        match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", version)
+        return bool(match and tuple(map(int, match.groups())) >= (3, 2, 0))
+    except Exception:
+        return False
+
+
+def _workbench_capabilities(client: Any, observer: Any, scope: Any) -> dict:
+    listing = getattr(scope, "list", None)
+    chat = getattr(observer, "chat", None)
+    exact_read = callable(listing) and _supports_parameter(listing, "filters")
+    return {
+        "conclusion_search": callable(getattr(scope, "query", None)) and _supports_parameter(scope.query, "filters"),
+        "conclusion_detail": exact_read,
+        "correction": exact_read and callable(getattr(scope, "create", None)),
+        "ask": callable(chat) and all(_supports_parameter(chat, p) for p in ("target", "session", "reasoning_level")),
+        "ask_evidence": callable(chat) and _supports_parameter(chat, "include_evidence") and _server_supports_evidence(client),
+    }
+
+
+def _collect_capabilities(request: SnapshotRequest, **factories: Any) -> dict:
+    result, client, observer, scope = _workbench_target(request, **factories)
+    flags = _workbench_capabilities(client, observer, scope)
+    result.update(capabilities=flags, reasons={
+        name: "The selected backend does not expose the required safe SDK/server capability. Existing memory browsing remains available."
+        for name, available in flags.items() if not available
+    })
+    return result
+
+
+def _read_exact_conclusion(scope: Any, conclusion_id: str, result: dict) -> dict:
+    operation = getattr(scope, "list", None)
+    if not callable(operation) or not _supports_parameter(operation, "filters"):
+        raise ValueError("This SDK cannot read an exact conclusion safely.")
+    page = operation(page=1, size=1, filters={"id": conclusion_id})
+    items = getattr(page, "items", None)
+    if not isinstance(items, list) or len(items) != 1:
+        raise ValueError("This conclusion is missing or is outside the configured peer relationship.")
+    return _checked_conclusion(items[0], result, expected_id=conclusion_id)
+
+
+def _collect_conclusion_detail(request: ConclusionDetailRequest, **factories: Any) -> dict:
+    result, client, _observer, scope = _workbench_target(request, **factories)
+    result.update(item=None, parents=[], derived=[], capabilities={"parents": False, "derived": False}, truncated=False)
+    if scope is None:
+        return result
+    try:
+        item = _read_exact_conclusion(scope, request.conclusion_id, result)
+        result["item"] = item
+    except Exception as exc:
+        return _workbench_error(result, exc)
+    # Older SDKs still get a useful exact-record inspector, without invented
+    # parentage. Only follow a single bounded level on known new servers.
+    if not callable(getattr(scope, "derived", None)) or not _server_supports_evidence(client):
+        return result
+    result["capabilities"] = {"parents": item["source_ids"] is not None, "derived": True}
+    for parent_id in (item["source_ids"] or [])[:10]:
+        try:
+            result["parents"].append(_read_exact_conclusion(scope, parent_id, result))
+        except Exception as exc:
+            result["errors"].append({"scope": "provenance.parent", "message": _safe_error(exc)})
+    result["truncated"] = bool(item["source_ids_truncated"] or len(item["source_ids"] or []) > 10)
+    try:
+        page = scope.derived(request.conclusion_id, page=1, size=10)
+        items = getattr(page, "items", None)
+        if not isinstance(items, list) or len(items) > 10:
+            raise ValueError("Malformed derived conclusion page.")
+        for child in items:
+            payload = _checked_conclusion(child, result)
+            if request.conclusion_id not in (payload["source_ids"] or []):
+                raise ValueError("Honcho returned an unrelated derived conclusion.")
+            result["derived"].append(payload)
+        result["truncated"] |= int(getattr(page, "total", len(items))) > len(items)
+    except Exception as exc:
+        result["errors"].append({"scope": "provenance.derived", "message": _safe_error(exc)})
+    if result["errors"]:
+        result["state"] = "partial"
+    return result
+
+
+def _collect_ask(request: AskRequest, **factories: Any) -> dict:
+    result, client, observer, scope = _workbench_target(request, **factories)
+    result.update(answer="", evidence=None, query=request.query, scope=request.scope,
+                  scope_explanation="Configured agent's memory of the user, limited to this Honcho session." if request.scope == "session" else "Configured agent's memory of the user across this workspace's sessions.")
+    if scope is None:
+        return result
+    flags = _workbench_capabilities(client, observer, scope)
+    if not flags["ask"] or (request.include_evidence and not flags["ask_evidence"]):
+        return _workbench_error(result, ValueError("The selected SDK/server cannot provide the requested reasoning capability."), "unsupported_sdk")
+    try:
+        client._http.timeout = 85
+        kwargs = {"target": result["target"]["observed_id"],
+                  "session": result["session_id"] if request.scope == "session" else None,
+                  "reasoning_level": request.reasoning_level}
+        if request.include_evidence:
+            kwargs["include_evidence"] = True
+        response = observer.chat(request.query, **kwargs)
+        answer = getattr(response, "content", response)
+        if answer is not None and not isinstance(answer, str):
+            raise ValueError("Honcho returned a malformed answer.")
+        result["answer"] = (answer or "")[:MAX_MESSAGE_CONTENT_CHARS]
+        result["answer_truncated"] = len(answer or "") > MAX_MESSAGE_CONTENT_CHARS
+        evidence = getattr(response, "evidence", None)
+        if request.include_evidence and evidence is not None:
+            try:
+                result["evidence"] = _reasoning_evidence(evidence, result, request.scope == "session")
+            except Exception as exc:
+                result["errors"].append({"scope": "evidence", "message": _safe_error(exc)})
+        elif request.include_evidence:
+            result["errors"].append({"scope": "evidence", "message": "The server returned no evidence for this answer."})
+        if result["errors"]:
+            result["state"] = "partial"
+    except Exception as exc:
+        _workbench_error(result, exc)
+    return result
+
+
+def _reasoning_evidence(evidence: Any, result: dict, session_only: bool) -> dict:
+    conclusions, messages, calls = [], [], []
+    for item in list(getattr(evidence, "conclusions", []))[:20]:
+        if any(getattr(item, key, None) not in (None, result["target"][key]) for key in ("observer_id", "observed_id")):
+            result["errors"].append({"scope": "evidence", "message": "Evidence outside the configured peer relationship was omitted."})
+            continue
+        if session_only and getattr(item, "session_id", None) != result["session_id"]:
+            result["errors"].append({"scope": "evidence", "message": "Evidence outside the requested session was omitted."})
+            continue
+        # Pre-3.2.1 evidence lacks peer attribution. Preserve unknowns instead
+        # of guessing from the question's target.
+        conclusions.append({
+            "id": str(item.id), "content": str(item.content)[:MAX_MESSAGE_CONTENT_CHARS],
+            "observer_id": getattr(item, "observer_id", None), "observed_id": getattr(item, "observed_id", None),
+            "source_session_id": getattr(item, "session_id", None), "level": str(item.level),
+            "belongs_to_current_session": getattr(item, "session_id", None) == result["session_id"],
+            "content_truncated": len(str(item.content)) > MAX_MESSAGE_CONTENT_CHARS,
+            "created_at": _iso(item.created_at), "source_ids": list(getattr(item, "source_ids", []))[:20],
+        })
+    for item in list(getattr(evidence, "messages", []))[:20]:
+        if session_only and item.session_id != result["session_id"]:
+            result["errors"].append({"scope": "evidence", "message": "Evidence outside the requested session was omitted."})
+            continue
+        messages.append({"id": str(item.id), "session_id": str(item.session_id), "peer_id": str(item.peer_id),
+                         "created_at": _iso(item.created_at)})
+    for item in list(getattr(evidence, "tool_calls", []))[:20]:
+        calls.append({"tool_name": str(item.tool_name)[:256], "tool_input": _safe_json(item.tool_input)})
+    return {"conclusions": conclusions, "messages": messages, "tool_calls": calls,
+            "reasoning_trace_id": str(getattr(evidence, "reasoning_trace_id", "") or "")[:256] or None,
+            "truncated": any(len(getattr(evidence, name, [])) > 20 for name in ("conclusions", "messages", "tool_calls"))}
+
+
+def _collect_correction_ticket(request: CorrectionTicketRequest, **factories: Any) -> dict:
+    result, client, observer, scope = _workbench_target(request, **factories)
+    result.update(ticket=None, content=request.content)
+    if scope is None:
+        return result
+    if not _workbench_capabilities(client, observer, scope)["correction"]:
+        return _workbench_error(result, ValueError("This SDK cannot create and verify corrections."), "unsupported_sdk")
+    try:
+        if request.source_conclusion_id:
+            _read_exact_conclusion(scope, request.source_conclusion_id, result)
+        now = time.time()
+        token = secrets.token_urlsafe(24)
+        with _upload_ticket_lock:
+            expired = [key for key, value in _correction_tickets.items() if value["expires_at"] <= now]
+            for key in expired:
+                _correction_tickets.pop(key)
+            if len(_correction_tickets) >= 128:
+                raise ValueError("Too many pending confirmations. Wait two minutes and retry.")
+            _correction_tickets[token] = {
+                "focus": {key: getattr(request, key) for key in SnapshotRequest.model_fields},
+                "target": dict(result["target"]), "content": request.content,
+                "source_conclusion_id": request.source_conclusion_id,
+                "expires_at": now + 120,
+            }
+        result.update(ticket=token, state="ready")
+    except Exception as exc:
+        _workbench_error(result, exc)
+    return result
+
+
+def _collect_correction(request: CorrectionRequest, **factories: Any) -> dict:
+    result = _operation_base(request)
+    result.update(verified=False, outcome="rejected", item=None)
+    # Consume inside the profile-bound worker, before any mutation. A ticket
+    # cannot be replayed after a timeout or by another focused conversation.
+    with _upload_ticket_lock:
+        ticket = _correction_tickets.pop(request.ticket, None)
+    if ticket is None or ticket["expires_at"] <= time.time():
+        return _workbench_error(result, ValueError("The confirmation expired or was already used."), "ticket_expired")
+    focus = {key: getattr(request, key) for key in SnapshotRequest.model_fields}
+    if ticket["focus"] != focus:
+        return _workbench_error(result, ValueError("The confirmation belongs to a different conversation or profile."), "ticket_mismatch")
+    prepared, _client, _observer, scope = _workbench_target(request, **factories)
+    result.update(prepared)
+    if scope is None:
+        return result
+    if ticket["target"] != result["target"]:
+        return _workbench_error(result, ValueError("The memory target changed after confirmation."), "ticket_mismatch")
+    try:
+        if ticket["source_conclusion_id"]:
+            _read_exact_conclusion(scope, ticket["source_conclusion_id"], result)
+    except Exception as exc:
+        return _workbench_error(result, exc)
+    try:
+        result["outcome"] = "unknown"
+        created = scope.create([{"content": ticket["content"], "session_id": result["session_id"]}])
+        if not isinstance(created, list) or len(created) != 1:
+            raise ValueError("Honcho did not return one created conclusion.")
+        item = _checked_conclusion(created[0], result, session_only=True)
+        readback = _read_exact_conclusion(scope, item["id"], result)
+        if readback["content"] != ticket["content"] or readback["source_session_id"] != result["session_id"]:
+            raise ValueError("Correction readback did not match the confirmed content and session.")
+        result.update(ok=True, verified=True, outcome="verified", state="verified", item=readback)
+    except Exception as exc:
+        _workbench_error(result, ValueError(f"{_safe_error(exc)} The correction may have been saved. Inspect Conclusions before adding it again."), "outcome_unknown")
+    return result
+
+
 def _collect_snapshot(
     request: SnapshotRequest,
     *,
@@ -1570,13 +1926,9 @@ def _collect_snapshot(
 
     started = time.monotonic()
     if config_factory is None or client_factory is None:
-        from plugins.memory.honcho.client import (  # imported inside request context
-            HonchoClientConfig,
-            get_honcho_client,
-        )
-
-        config_factory = config_factory or HonchoClientConfig.from_global_config
-        client_factory = client_factory or get_honcho_client
+        honcho = _honcho_client_module()
+        config_factory = config_factory or cast(Callable[[], Any], honcho.HonchoClientConfig.from_global_config)
+        client_factory = client_factory or cast(Callable[[Any], Any], honcho.get_honcho_client)
 
     config = config_factory()
     result = _base_snapshot(request, config)
@@ -1816,11 +2168,13 @@ async def _run_collector(
     request: SnapshotRequest,
     collector: Callable[[Any], dict[str, Any]],
     profile: str | None = None,
+    *, timeout: float | None = None,
 ) -> dict[str, Any]:
+    timeout = REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_collect_in_profile, profile, request, collector),
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except HTTPException:
         raise
@@ -1830,7 +2184,7 @@ async def _run_collector(
             state="unreachable",
             scope="connection",
             message="Honcho did not respond before the request timed out.",
-            latency_ms=REQUEST_TIMEOUT_SECONDS * 1000,
+            latency_ms=int(timeout * 1000),
         )
     except Exception as exc:
         return _failure_payload(
@@ -1882,6 +2236,39 @@ async def scopes(request: ScopesRequest, profile: str | None = None) -> dict[str
     """Return a bounded page of existing Honcho visibility scopes."""
 
     return await _run_collector(request, _collect_scopes, profile)
+
+
+@router.post("/capabilities")
+async def capabilities(request: SnapshotRequest, profile: str | None = None) -> dict:
+    return await _run_collector(request, _collect_capabilities, profile)
+
+
+@router.post("/ask")
+async def ask(request: AskRequest, profile: str | None = None) -> dict:
+    return await _run_collector(request, _collect_ask, profile, timeout=90)
+
+
+@router.post("/correction-ticket")
+async def correction_ticket(request: CorrectionTicketRequest, profile: str | None = None) -> dict:
+    return await _run_collector(request, _collect_correction_ticket, profile)
+
+
+@router.post("/corrections")
+async def corrections(request: CorrectionRequest, profile: str | None = None) -> dict:
+    result = await _run_collector(request, _collect_correction, profile)
+    if "outcome" not in result:
+        result.update(verified=False, outcome="unknown", item=None)
+    return result
+
+
+@router.post("/conclusion-detail")
+async def conclusion_detail(request: ConclusionDetailRequest, profile: str | None = None) -> dict:
+    return await _run_collector(request, _collect_conclusion_detail, profile)
+
+
+@router.post("/conclusion-search")
+async def conclusion_search(request: ConclusionSearchRequest, profile: str | None = None) -> dict:
+    return await _run_collector(request, _collect_conclusion_search, profile)
 
 
 @router.post("/activity")

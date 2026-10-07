@@ -12,8 +12,7 @@ On the Windows workstation, install from Git:
 hermes plugins install https://github.com/outpoints/hermes-honcho-plugin --enable
 ```
 
-The repository is currently private, so Git must be authenticated with access
-to it. To test an exact candidate on both machines, add `--ref <full-commit-sha>`
+To test an exact candidate on both machines, add `--ref <full-commit-sha>`
 using the same published SHA. If a plugin directory already exists, back it up
 before deliberately reinstalling with `--force`.
 

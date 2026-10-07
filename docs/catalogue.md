@@ -28,11 +28,11 @@ It does not verify unpublished image URLs.
 
 ## Before submitting
 
-The repository is private. Catalogue admission requires publicly accessible
-code and image URLs, so its visibility must change first. Publishing a commit
-does not submit it to the catalogue.
+Catalogue admission requires publicly accessible code and image URLs.
+Publishing a commit does not submit it to the catalogue.
 
-1. Complete the [Windows SSH checklist](windows-ssh-testing.md).
+1. Complete the [Windows SSH checklist](windows-ssh-testing.md) when a Windows
+   workstation is available. Until then, state in the PR that it is untested.
 2. Run `./scripts/check.sh`, `hermes plugins validate . --json`,
    `hermes plugins doctor --ci .`, the host checks and privacy scans.
 3. Replace every `RELEASE_COMMIT_SHA` in the template with the exact published

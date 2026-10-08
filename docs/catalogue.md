@@ -19,8 +19,13 @@ It does not verify unpublished image URLs.
 - Existing Hermes Honcho configuration and SDK, with no new runtime dependency.
 - Empty tool/hook/middleware/env capabilities, matching the registration probe.
   This is a Desktop UI/API companion, not a replacement memory provider.
-- A 2:1 banner and six gallery images in [`docs/catalog`](catalog), all
-  rendered from synthetic data, plus a README with a disclosure section.
+- A 2:1 banner and six gallery images in [`docs/catalog`](catalog). The UI in
+  them is synthetic data. The drawings are AI-generated, and
+  [`docs/catalog/art`](catalog/art/README.md) records the prompts and the MIT
+  notice for the Nous Girl reference. Every image is labelled as an unofficial
+  community plugin.
+- A README with disclosure and affiliation sections. The plugin is not
+  affiliated with Nous Research or Plastic Labs.
 - The historical implementation plan that triggered the scanner's
   `agent_config_mod` caution is no longer in the repository.
 - Public maintainer handle only. No private contact information is needed.
@@ -64,6 +69,9 @@ Disclosure:
   confirmation, with exact readback. No automatic retries.
 - Usage: Ask runs a Honcho reasoning call, only when the user submits it.
 - Credentials: never read, returned or stored by the plugin.
+- Artwork: AI-generated drawings of the Nous Girl, made with the MIT
+  `assets/nous-girl-black.svg` from hermes-agent as a reference and labelled
+  unofficial. The plugin is not affiliated with Nous Research or Plastic Labs.
 
 All backend traffic goes through `ctx.rest()`. Remote aliases resolve through
 `host.profileRoutes()`. Chats on another connection, or with ambiguous

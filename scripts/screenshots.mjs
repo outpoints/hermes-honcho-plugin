@@ -203,7 +203,7 @@ try {
   await page.getByText('Correction saved and verified').waitFor()
   assert.equal(await page.evaluate(() => window.demoCalls.filter(call => call.path.startsWith('/corrections')).length), 1)
 
-  // Light captures feed the catalog gallery (scripts/catalog-art.mjs).
+  // Light-theme captures and accessibility checks.
   await page.goto(`${origin}/?theme=light`); await ready(); await settled(); await capture('memory-light.png')
   await checkAccessibility('memory-light')
   await page.getByRole('button', { name: /Morning-length routes/ }).click()

@@ -3,7 +3,6 @@
 > 0.4.0 keeps this direction and simplifies the structure to five sections
 > (Memory, Ask, Messages, Context, Status). Conclusion search and provenance
 > moved into Memory, message search into Messages, and diagnostics into Status.
-> See `.interface-design/system.md` for the current layout rules.
 
 The user approved this direction after reviewing the plugin's status-first limitations. This is a functional overhaul inside the established Hermes visual system, not a new visual identity.
 
@@ -44,9 +43,8 @@ the existing Hermes world, so there is no replacement comp or concept roll.
 
 ### Persistence
 
-`PRODUCT.md`, this direction, and `.interface-design/system.md` retain the
-product and native visual constraints. No unrelated design-system migration was
-performed. The latter's older overview terminology was not silently rewritten.
+`PRODUCT.md` and this direction retain the product and native visual
+constraints. No unrelated design-system migration was performed.
 
 ### Fidelity
 

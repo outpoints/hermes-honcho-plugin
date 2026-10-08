@@ -1,0 +1,71 @@
+{
+  "generator": "Hermes Agent image_gen provider \"openai-codex\" (gpt-image-2, high quality)",
+  "generated": "2026-10-08",
+  "reference_image": "assets/nous-girl-black.svg from NousResearch/hermes-agent (MIT, Copyright (c) 2025 Nous Research), rendered to a 1024x1024 black-on-white PNG. Used only where reference_image is true.",
+  "post_processing": "Converted to 8-bit grayscale, metadata stripped, quantized to 32 gray levels with pngquant. scripts/catalog-art.mjs crops and dithers them into the catalog images.",
+  "images": [
+    {
+      "file": "hero.png",
+      "used_in": "banner.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1536x1024",
+      "returned_size": "1254x1254",
+      "reference_image": true,
+      "prompt": "A new illustration of the girl in the reference image: same blunt-bang bob haircut, thin hairband, large almond eyes, small lips, 1990s anime cel line art. Show her from the chest up in three-quarter view on the right half of the frame. Her eyes are covered by a thin horizontal band of corrupted digital static made of tiny square pixel blocks, like a glitched data blindfold; her expression is calm. Behind her head and spreading across the left half: a large esoteric memory diagram made of concentric engraved rings with fine tick marks, a nine-pointed star polygon with every chord drawn, small hollow circular nodes joined by thin lines like a constellation, a thin crescent moon, and a few four-pointed sparkle stars. Style: monochrome 1-bit ink etching, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature, no border."
+    },
+    {
+      "file": "memory.png",
+      "used_in": "gallery-memory.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1024x1536",
+      "reference_image": true,
+      "prompt": "A new illustration of the girl in the reference image: same blunt-bang bob haircut, thin hairband, large almond eyes, 1990s anime cel line art. She looks down at a glowing sphere cupped in both hands. Inside the sphere is a branching tree of thin lines and small hollow circles, like a graph where several roots join into a single bright node at the top. Thin orbit rings with tick marks circle the sphere, and small four-pointed sparkles float around her. Framed inside a tall rounded arch made of a single thin line. Style: monochrome 1-bit ink etching, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    },
+    {
+      "file": "ask.png",
+      "used_in": "gallery-ask.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1254x1254",
+      "reference_image": true,
+      "prompt": "A new illustration of the girl in the reference image: same blunt-bang bob haircut, thin hairband, large almond eyes, 1990s anime cel line art. She is an oracle seen from the shoulders up, eyes closed, holding one hand open toward the viewer. Above her floats a large all-seeing eye inside an equilateral triangle with radiating engraved rays, and a logarithmic spiral of tiny dots unwinds from her open palm up toward the eye. Style: monochrome 1-bit ink etching, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    },
+    {
+      "file": "correct.png",
+      "used_in": "gallery-correct.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1254x1254",
+      "reference_image": true,
+      "prompt": "A new illustration of the girl in the reference image: same blunt-bang bob haircut, thin hairband, large almond eyes, 1990s anime cel line art. She writes with a long feather quill on the top tablet of a neat stack of thin stone tablets; the older tablets below remain intact and visible. Above her hangs a delicate balance scale in perfect equilibrium, and a single four-pointed sparkle marks the quill tip. The marks on the tablets are abstract wavy strokes and small circles, not letters. Style: monochrome 1-bit ink etching, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    },
+    {
+      "file": "pane.png",
+      "used_in": "gallery-pane.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1254x1254",
+      "reference_image": true,
+      "prompt": "A new illustration of the girl in the reference image: same blunt-bang bob haircut, thin hairband, large almond eyes, 1990s anime cel line art. She leans beside a tall narrow arched window, one hand on the frame, looking out. The window's center mullion is a caduceus: a winged staff with two serpents spiraling up it. Through the glass is a night sky drawn as stippled stars and a few constellation lines. Style: monochrome 1-bit ink etching, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    },
+    {
+      "file": "messages.png",
+      "used_in": "gallery-messages.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1024x1536",
+      "reference_image": false,
+      "prompt": "An esoteric engraving: a flock of messenger swallows flying in a rising spiral, each bird trailing a fine thread; the threads braid together into a long ribbon scroll that unrolls across the bottom of the image. The ribbon is covered in abstract wave marks and small dots, not letters. A small crescent moon and four-pointed sparkle stars fill the gaps. Style: monochrome 1-bit ink etching like a 16th-century woodcut, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    },
+    {
+      "file": "status.png",
+      "used_in": "gallery-status.png",
+      "model": "gpt-image-2-high",
+      "requested_size": "1024x1024",
+      "returned_size": "1145x1374",
+      "reference_image": false,
+      "prompt": "An esoteric engraving of an armillary sphere seen slightly from above: nested brass rings with fine tick marks and zodiac-like abstract symbols (geometric glyphs, not letters), a central stippled sphere, and small circular nodes on the outer rings joined by thin straight lines like a network diagram. The sphere stands on a slender ornate pedestal. Four-pointed sparkle stars in the background. Style: monochrome 1-bit ink etching like a 16th-century woodcut, fine engraved hatching and stippling, pure black lines on a pure white background, no gray wash, no color, no text, no letters, no numbers, no signature."
+    }
+  ]
+}

@@ -32,8 +32,8 @@ captures, not screenshots of an activated plugin in a running Desktop/SSH sessio
 | [Disconnected](disconnected.png) | Backend unavailable without fallback |
 
 The light captures `ask-light.png`, `correction-light.png`, `search-light.png`,
-`status-light.png` and `memory-pane-detail-light.png` exist to feed the catalog
-art in [`docs/catalog`](../catalog).
+`status-light.png` and `memory-pane-detail-light.png` cover the light theme.
+The catalog art in [`docs/catalog`](../catalog) uses the dark captures.
 
 ## Reproduce
 
@@ -61,8 +61,10 @@ records dimensions, the tested host commit, the plugin SHA-256 and
 runtime/network checks. OS font rendering may vary.
 
 `catalog-art.mjs` composes the 2:1 banner and the six gallery images from these
-captures. It loads the Rules and Collapse fonts from the host checkout's
-`@nous-research/ui` package (MIT) at render time and does not copy them here.
+captures and the generated drawings in [`docs/catalog/art`](../catalog/art/README.md).
+It loads Mondwest and Neuebit from the host checkout's `@nous-research/ui`
+package (MIT) and JetBrains Mono from the built Desktop assets at render time,
+and copies none of them here.
 
 Review regenerated images visually before publishing. Do not replace these
 fixtures with exports, screenshots, paths or IDs from a real profile.

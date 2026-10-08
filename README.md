@@ -7,6 +7,9 @@ chat you are looking at. Read what Honcho concluded, see where each conclusion
 came from, search what was said, ask a question, and correct memory that is
 wrong, without leaving the conversation.
 
+This is an independent community plugin. It is not affiliated with, or
+endorsed by, Nous Research or Plastic Labs.
+
 It opens as a page from the sidebar (**Honcho**) and as a **Honcho Memory**
 pane docked beside the chat. A status-bar item shows whether Honcho is
 reachable and whether background reasoning is still running.
@@ -158,6 +161,21 @@ More detail: [architecture](docs/architecture.md),
 [screenshots](docs/screenshots/README.md),
 [catalog submission](docs/catalogue.md).
 
+## Affiliation and trademarks
+
+Honcho Memory for Hermes is an independent, community-made project. It is not
+affiliated with, endorsed by, sponsored by or supported by Nous Research or
+Plastic Labs.
+
+"Hermes", "Hermes Agent", "Nous Research" and the Nous Girl character are
+trademarks or brand assets of Nous Research. "Honcho" is a product of Plastic
+Labs. These names appear here only to say what the plugin works with.
+
+The catalog images show new, AI-generated drawings of the Nous Girl, made with
+her MIT-licensed mark from hermes-agent as a reference. The prompts and the
+license notice are in [docs/catalog/art](docs/catalog/art/README.md).
+
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0. See [LICENSE](LICENSE). It grants no rights to the names or marks
+above.

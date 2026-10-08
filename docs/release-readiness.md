@@ -1,5 +1,28 @@
 # Release verification
 
+## 0.4.0 catalog artwork, 2026-10-08
+
+No plugin code changed. Version stays 0.4.0.
+
+- New banner and six gallery images in `docs/catalog`, composed by
+  `scripts/catalog-art.mjs` from the dark synthetic captures and seven
+  AI-generated drawings in `docs/catalog/art` (Hermes `openai-codex` image
+  provider, gpt-image-2). Five use the MIT Nous Girl mark from hermes-agent as
+  a reference. Prompts, sizes and the MIT notice are in `docs/catalog/art`.
+- Every image is labelled "Unofficial community plugin". The README has an
+  affiliation and trademarks section: not affiliated with Nous Research or
+  Plastic Labs.
+- `.interface-design/` is no longer tracked. It remains in three earlier
+  commits. A pattern scan of those commits found nothing private.
+- `./scripts/check.sh`: 69 JavaScript and 94 Python tests pass.
+  `hermes plugins validate . --json` passes with no warnings and
+  `hermes plugins doctor --ci .` passes.
+- Privacy: the pattern scan of current files and all 9 commits found nothing.
+  Gitleaks found no leaks in the history or the working tree. The source
+  drawings had their generator metadata, local paths and request IDs removed,
+  and no PNG carries embedded metadata. All commits use the GitHub noreply
+  address.
+
 ## 0.4.0, 2026-10-07
 
 ### Changes

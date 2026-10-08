@@ -1,7 +1,7 @@
 {
   "synthetic": true,
-  "host_commit": "ee8dd6c886326db4b468c2ba18d9409f123da827",
-  "plugin_sha256": "743487b2dd927e5abbc1e70453506102fa3060495d6bab3ad7d81a71bbf6447c",
+  "host_commit": "8cb42b9ee33e2dd3e3b0f3f5797e1a599ca83251",
+  "plugin_sha256": "5f7cafd9b04eb9529837ae659f0a18a035c272780af42fc01606b25835718ebc",
   "captures": [
     {
       "file": "memory-dark.png",

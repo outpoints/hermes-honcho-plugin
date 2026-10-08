@@ -180,7 +180,8 @@ const PLATES = {
     number: 'II', section: 'Ask', headline: ['Ask your', 'memory'], motto: 'Interroga memoriam.',
     body: 'Runs only when you ask. Lists the records Honcho read, so you can check the answer yourself.',
     figure: 'ORACULUM', artwork: { key: 'ask', focus: [0.5, 0.45], at: [0.5, 0.45], zoom: 1 },
-    ui: { title: 'ASK', file: 'ask-memory.png', crop: [40, 18, 900] },
+    // Full width: the records Honcho read sit in a column beside the answer.
+    ui: { title: 'ASK', file: 'ask-memory.png', crop: [40, 18, 1120] },
     extra: spark(846, 138, 16) + spark(1150, 560, 10)
   },
   'gallery-correct.png': {

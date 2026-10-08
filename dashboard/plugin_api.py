@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
 
-PLUGIN_VERSION = "0.4.0"
+PLUGIN_VERSION = "0.4.1"
 REQUEST_TIMEOUT_SECONDS = 20
 UPLOAD_TIMEOUT_SECONDS = 120
 UPLOAD_TICKET_TTL_SECONDS = 120

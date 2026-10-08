@@ -11,7 +11,7 @@ It does not verify unpublished image URLs.
 ## What is prepared
 
 - Matching plugin manifest, dashboard manifest, backend and entry version:
-  **0.4.0**. A contract test keeps all four in agreement.
+  **0.4.1**. A contract test keeps all four in agreement.
 - `requires_hermes: ">=0.21.4"`, a SemVer floor derived from the host APIs the
   plugin uses. See [compatibility.md](compatibility.md).
 - SDK-only runtime ESM and host-owned authenticated transport. No self-updater,

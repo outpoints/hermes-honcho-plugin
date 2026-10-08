@@ -1,5 +1,53 @@
 # Release verification
 
+## 0.4.1, 2026-10-08
+
+### Changes
+
+- Context uses the page width on wide panes: this session's summary and
+  observations on the left, workspace-wide memory on the right. Observations
+  are grouped by day with a time column, premises and sources are indented, and
+  pattern and contradiction entries carry a small label. The peer card is
+  grouped by category. The layers the backend already fetched but never showed,
+  what Honcho knows across sessions and the recent messages, are now visible.
+- Summaries, Ask answers and saved messages render through the host's chat
+  Markdown renderer (`MessageTextContent`, `media={false}`), so headings, lists,
+  tables and code no longer show as raw syntax.
+- Messages are grouped by day with a speaker column, fold long messages by
+  rendered height, and label Hermes's `[continued]` chunks instead of printing
+  the marker. Search results keep Honcho's relevance order.
+- Ask puts the records Honcho read beside the answer on wide panes. Message
+  evidence names its author and time and says Honcho sends no message text.
+- Memory text is selectable again. The Desktop shell disables selection on
+  `body`, and the plugin now opts its content back in with the host's
+  `data-selectable-text` attribute.
+- Screenshot fixtures use Honcho's real wire formats (markdown messages and
+  summaries, `format_as_markdown()` representations, categorized peer cards).
+  The old one-line fixtures hid every raw-markup defect above.
+- `scripts/screenshots.mjs` works with the current host again: it stubs the
+  theme's typography knobs, bundles `.ts` host sources as TypeScript, and
+  defines `import.meta.env`.
+- The entry template's description now matches the merged catalog entry.
+
+### Verification
+
+- `./scripts/check.sh`: 78 JavaScript and 94 Python tests pass.
+- `scripts/check-ui-surface.mjs`: all 41 SDK imports and 8 icons exist in
+  Hermes v2026.9.21 (0.21.4), v2026.9.24 and current main. `MessageTextContent`
+  is absent in v2026.9.14 (0.21.3), so `requires_hermes: ">=0.21.4"` still
+  holds. All 114 utility classes exist in the shipped stylesheet.
+- `scripts/screenshots.mjs` against host 8cb42b9ee3: 26 synthetic captures and
+  13 axe WCAG A/AA audits with 0 violations, 0 browser errors, 0 external
+  requests and 0 uploads. A separate scratch pass captured all five sections at
+  1320, 760 and 380 px in both themes with 0 violations and no horizontal
+  overflow, and confirmed message text computes `user-select: text`.
+- `scripts/catalog-art.mjs`: four gallery plates changed (Memory, Ask, Messages,
+  Status). The Ask crop now spans the full width so the records column is not
+  cut off. The banner, Correct and Pane plates are byte-identical.
+- Not verified in a running Desktop app: the packaged app exposes no debugging
+  port. Rendering was checked in the isolated harness with the host's real
+  components and stylesheet.
+
 ## 0.4.0 catalog artwork, 2026-10-08
 
 No plugin code changed. Version stays 0.4.0.

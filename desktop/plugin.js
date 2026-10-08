@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
   host,
   icons,
+  MessageTextContent,
   PanelEmpty,
   PANES_AREA,
   PALETTE_AREA,
@@ -83,6 +84,9 @@ const READABLE_TOKENS = {
 const TEXT_TAB = 'group/text-tab inline-flex h-7 items-center gap-1 bg-transparent px-1 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-transparent hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
 const BLOCK = 'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-foreground/5 p-2.5 text-[0.68rem] leading-relaxed text-foreground/80'
 const PROSE = { maxWidth: '72ch', overflowWrap: 'anywhere' }
+// The app shell disables text selection globally. Memory content opts back in,
+// as core chat and first-party plugins do, so it can be selected and copied.
+const SELECTABLE = { 'data-selectable-text': 'true' }
 // Rows keep their hover padding while their text aligns with the heading.
 const BLEED = { marginInline: -10 }
 // Dialog geometry the shipped stylesheet has no utilities for.
@@ -154,11 +158,6 @@ function plural(count, singular, many = `${singular}s`) {
   return `${number(count, '0')} ${Number(count) === 1 ? singular : many}`
 }
 
-function compact(value, limit = 180) {
-  const source = text(value, '')
-  return source.length > limit ? `${source.slice(0, limit).trimEnd()}…` : source
-}
-
 function formatTime(value, fallback = 'Unknown time') {
   if (!value) return fallback
   const date = new Date(value)
@@ -210,6 +209,158 @@ function contextMessageDetail(session) {
   return session?.token_count === null || session?.token_count === undefined
     ? `${count} · token total not reported`
     : `${count} · ${plural(session.token_count, 'server-reported token')}`
+}
+
+// ── Honcho text formats ─────────────────────────────────────────────────────
+// Presentation only. The raw strings stay untouched in Copy actions.
+// Multi-line markdown (summaries, answers, messages) goes through the host's
+// chat renderer (see Markdown). One-line records use this inline subset.
+
+function inlineMarkdown(source) {
+  const value = text(source, '')
+  const parts = []
+  let last = 0
+  for (const match of value.matchAll(/\*\*([^*\n]+)\*\*|`([^`\n]+)`/g)) {
+    if (match.index > last) parts.push(value.slice(last, match.index))
+    parts.push(match[1] !== undefined
+      ? jsx('strong', { className: 'font-medium text-foreground', children: match[1] }, match.index)
+      : jsx('code', { className: 'font-mono text-foreground', style: { fontSize: '0.92em' }, children: match[2] }, match.index))
+    last = match.index + match[0].length
+  }
+  if (!parts.length) return value
+  if (last < value.length) parts.push(value.slice(last))
+  return parts
+}
+
+// Honcho's Representation.format_as_markdown(): "## Explicit Observations"
+// sections of "[YYYY-MM-DD HH:MM:SS] text" entries, with indented premises or
+// sources. Older SDKs send "EXPLICIT:" headings and numbered entries.
+// Inductive and contradiction entries carry no timestamp; they open with a
+// bold label instead: " **Pattern** [high]: text", " **CONTRADICTION**: text".
+const OBSERVATION_PREFIX = /^(?:\d{1,4}[.)]\s+)?(?:\[id:[^\]]*\]\s*)?/
+const OBSERVATION_STAMP = /^\[((\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?[^\]]*)\]\s*/
+const OBSERVATION_LABEL = /^\*\*([A-Za-z][A-Za-z ]{0,30})\*\*\s*(?:\[([A-Za-z]{1,12})\])?\s*:\s*/
+
+function observationLabel(name, confidence) {
+  if (confidence) return `${sentence(confidence.toLowerCase())} confidence`
+  return name.toLowerCase() === 'pattern' ? null : sentence(name.toLowerCase())
+}
+
+function parseRepresentation(source) {
+  const sections = []
+  let section = null
+  let entry = null
+  const open = title => {
+    section = { title, entries: [] }
+    sections.push(section)
+    entry = null
+  }
+  for (const line of text(source, '').split('\n')) {
+    if (!line.trim()) continue
+    const heading = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/) || line.match(/^([A-Z][A-Z ]{2,40}):\s*$/)
+    if (heading) {
+      open(heading[1])
+      continue
+    }
+    if (entry && /^\s{2,}\S/.test(line)) {
+      entry.details.push(line.trim())
+      continue
+    }
+    if (!section) open(null)
+    let body = line.trim().replace(OBSERVATION_PREFIX, '')
+    const stamp = body.match(OBSERVATION_STAMP)
+    if (stamp) body = body.slice(stamp[0].length)
+    const label = stamp ? null : body.match(OBSERVATION_LABEL)
+    if (label) body = body.slice(label[0].length)
+    entry = {
+      stamp: stamp ? stamp[1] : null,
+      date: stamp ? stamp[2] : null,
+      time: stamp ? stamp[3] : null,
+      label: label ? observationLabel(label[1], label[2]) : null,
+      text: body,
+      details: []
+    }
+    section.entries.push(entry)
+  }
+  return sections.filter(item => item.entries.length)
+}
+
+// Honcho's structural headings ("Explicit Observations", "EXPLICIT") read in
+// the host's sentence case. They are labels, not memory content.
+function sectionTitle(title) {
+  return title ? sentence(title.toLowerCase()) : null
+}
+
+function countObservations(sections) {
+  return sections.reduce((total, section) => total + section.entries.length, 0)
+}
+
+function formatDay(isoDate) {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  // Honcho strips the time zone from these stamps, so keep the calendar date
+  // exactly as written instead of shifting it into the viewer's zone.
+  const date = new Date(year, month - 1, day)
+  if (Number.isNaN(date.getTime())) return isoDate
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date)
+}
+
+// Peer cards are "CATEGORY: Key: value" facts, or plain sentences.
+function parsePeerCard(facts) {
+  const groups = []
+  const byCategory = new Map()
+  for (const fact of Array.isArray(facts) ? facts : []) {
+    const source = text(fact, '').trim()
+    if (!source) continue
+    const categorized = source.match(/^([A-Z][A-Z0-9_ -]{1,31}):\s+([\s\S]+)$/)
+    const category = categorized ? categorized[1] : ''
+    const body = categorized ? categorized[2] : source
+    const keyed = body.match(/^([^:\n]{1,40}?):\s+([\s\S]+)$/)
+    // A key is a short label, not a sentence that happens to contain a colon.
+    const key = keyed && keyed[1].trim().split(/\s+/).length <= 4 && !/[.!?]$/.test(keyed[1]) ? keyed[1].trim() : null
+    let group = byCategory.get(category)
+    if (!group) {
+      group = { category, label: category ? sentence(category.toLowerCase()) : null, facts: [] }
+      byCategory.set(category, group)
+      groups.push(group)
+    }
+    group.facts.push({ key, value: key ? keyed[2] : body, source })
+  }
+  return groups
+}
+
+// Hermes splits turns over Honcho's message limit and prefixes every later
+// chunk with "[continued] " so Honcho can rejoin them.
+const CONTINUED_PREFIX = '[continued] '
+
+function messageBody(content) {
+  const source = text(content, '')
+  return source.startsWith(CONTINUED_PREFIX)
+    ? { continued: true, body: source.slice(CONTINUED_PREFIX.length) }
+    : { continued: false, body: source }
+}
+
+// Message timestamps carry a zone, so they group by the viewer's calendar day.
+function localDay(value) {
+  const date = new Date(value)
+  if (!value || Number.isNaN(date.getTime())) return null
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function formatClock(value) {
+  const date = new Date(value)
+  if (!value || Number.isNaN(date.getTime())) return null
+  return new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+}
+
+function groupByDay(items, dayOf) {
+  const days = []
+  for (const item of items) {
+    const date = dayOf(item)
+    const last = days[days.length - 1]
+    if (last && last.date === date) last.items.push(item)
+    else days.push({ date, items: [item] })
+  }
+  return days
 }
 
 // ── Focus and ownership ─────────────────────────────────────────────────────
@@ -607,7 +758,7 @@ function StateLine({ tone = 'muted', title, children }) {
         children: [
           jsx('div', { className: cn('text-xs font-medium', tone === 'bad' ? 'text-destructive' : 'text-foreground'), children: title }),
           children
-            ? jsx('div', { className: 'mt-0.5 text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children })
+            ? jsx('div', { ...SELECTABLE, className: 'mt-0.5 text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children })
             : null
         ]
       })
@@ -618,6 +769,7 @@ function StateLine({ tone = 'muted', title, children }) {
 function Diagnostics({ errors }) {
   if (!errors?.length) return jsx(StateLine, { tone: 'good', title: 'No problems found', children: 'Every Honcho read answered.' })
   return jsx('ul', {
+    ...SELECTABLE,
     className: 'space-y-2',
     children: errors.map((error, index) => jsxs('li', {
       className: 'min-w-0',
@@ -679,6 +831,7 @@ function DetailRow({ label, value, mono = false, accent = false }) {
     children: [
       jsx('dt', { className: 'text-xs text-(--ui-text-tertiary)', children: label }),
       jsx('dd', {
+        ...SELECTABLE,
         className: cn('min-w-0 text-xs text-foreground', mono && 'font-mono text-[11px]', accent && 'text-primary'),
         style: { overflowWrap: 'anywhere' },
         children: text(value)
@@ -757,6 +910,7 @@ function Lineage({ focus, snapshot }) {
     ['Peer', config?.user_peer]
   ]
   return jsx('dl', {
+    ...SELECTABLE,
     'aria-label': 'Where this memory lives',
     className: 'flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1 text-xs',
     children: items.map(([label, value]) => jsxs('div', {
@@ -938,7 +1092,7 @@ function MetaLine({ parts }) {
 
 function ConclusionRow({ conclusion, selected = false, onSelect }) {
   const body = [
-    jsx('span', { className: 'block text-[13px] leading-5 text-foreground', style: PROSE, children: conclusion.content }, 'content'),
+    jsx('span', { className: 'block text-[13px] leading-5 text-foreground', style: PROSE, children: inlineMarkdown(conclusion.content) }, 'content'),
     jsx(MetaLine, { parts: conclusionMeta(conclusion) }, 'meta')
   ]
   if (!onSelect) return jsx('div', { className: 'flex min-w-0 flex-col gap-1 px-2.5 py-2', children: body })
@@ -977,26 +1131,22 @@ function SessionContext({ enabled = true }) {
   return jsx(QueryState, {
     query: context,
     children: jsxs('div', {
-      className: 'space-y-4',
+      className: 'space-y-6',
       children: [
         jsxs('section', {
-          className: 'space-y-1',
+          className: 'space-y-2',
           children: [
             jsx(RegionHeading, { children: 'Session summary' }),
-            jsx('p', {
-              className: cn('whitespace-pre-wrap text-xs leading-5', data?.session?.summary ? 'text-foreground' : 'text-(--ui-text-secondary)'),
-              style: PROSE,
-              children: data?.session?.summary || 'No summary yet. Honcho writes one after enough messages.'
-            })
+            data?.session?.summary
+              ? jsx(Markdown, { source: data.session.summary })
+              : jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'No summary yet. Honcho writes one after enough messages.' })
           ]
         }),
         jsxs('section', {
-          className: 'space-y-1',
+          className: 'space-y-2',
           children: [
             jsx(RegionHeading, { meta: 'Whole workspace', children: 'Peer card' }),
-            data?.peer_card?.length
-              ? jsx('ul', { className: 'list-disc space-y-1 pl-4 text-xs leading-5 text-foreground', style: PROSE, children: data.peer_card.map((fact, index) => jsx('li', { children: fact }, index)) })
-              : jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'No peer card yet.' })
+            jsx(PeerCardFacts, { facts: data?.peer_card })
           ]
         }),
         jsx(Button, { variant: 'link', size: 'inline', onClick: () => $activeTab.set('context'), children: 'Open the full context' })
@@ -1005,7 +1155,8 @@ function SessionContext({ enabled = true }) {
   })
 }
 
-function SummaryDisclosure() {
+// Content mounts only when opened, so a closed disclosure never fetches.
+function Disclosure({ label, meta, indent = true, children }) {
   const [open, setOpen] = useState(false)
   return jsxs('div', {
     className: 'min-w-0',
@@ -1015,11 +1166,19 @@ function SummaryDisclosure() {
         'aria-expanded': open,
         onClick: () => setOpen(value => !value),
         className: 'flex items-center gap-1.5 py-1 text-xs font-medium text-(--ui-text-secondary) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
-        children: [jsx(DisclosureCaret, { open }), 'Session summary and peer card']
+        children: [
+          jsx(DisclosureCaret, { open }),
+          label,
+          meta ? jsx('span', { className: 'font-normal tabular-nums text-(--ui-text-tertiary)', children: meta }) : null
+        ]
       }),
-      open ? jsx('div', { className: 'pt-2 pl-5', children: jsx(SessionContext, {}) }) : null
+      open ? jsx('div', { className: indent ? 'pt-2 pl-5' : 'pt-2', children: typeof children === 'function' ? children() : children }) : null
     ]
   })
+}
+
+function SummaryDisclosure() {
+  return jsx(Disclosure, { label: 'Session summary and peer card', children: () => jsx(SessionContext, {}) })
 }
 
 function ConclusionInspector({ id, fallback, flags, onSelect, onClose, onCorrect, backLabel }) {
@@ -1057,7 +1216,7 @@ function ConclusionInspector({ id, fallback, flags, onSelect, onClose, onCorrect
             className: 'space-y-4',
             children: [
               backLabel ? jsx('h2', { ref: heading, tabIndex: -1, className: 'sr-only', children: 'Conclusion' }) : null,
-              jsx('p', { className: 'whitespace-pre-wrap text-sm leading-6 text-foreground', style: PROSE, children: item.content }),
+              jsx('p', { ...SELECTABLE, className: 'whitespace-pre-wrap text-sm leading-6 text-foreground', style: PROSE, children: inlineMarkdown(item.content) }),
               jsxs('dl', {
                 children: [
                   jsx(DetailRow, { label: 'Observer', value: item.observer_id, mono: true }),
@@ -1328,7 +1487,7 @@ function CorrectionDialog({ confirmation, onClose }) {
               className: 'space-y-1',
               children: [
                 jsx('div', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Current conclusion' }),
-                jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: confirmation.source.content })
+                jsx('p', { ...SELECTABLE, className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: inlineMarkdown(confirmation.source.content) })
               ]
             })
           : null,
@@ -1398,161 +1557,281 @@ function AskSection() {
     $selection.set({ id, fingerprint: focus.fingerprint })
     $activeTab.set('memory')
   }
+  const wide = layout === 'wide'
 
-  return jsxs('div', {
-    className: 'min-w-0 space-y-5',
-    style: { maxWidth: 880 },
+  const composer = jsxs('fieldset', {
+    disabled: mutation.isPending || !flags.ask || focus.routeMismatch,
+    className: 'min-w-0 space-y-2',
     children: [
-      jsxs('fieldset', {
-        disabled: mutation.isPending || !flags.ask || focus.routeMismatch,
-        className: 'min-w-0 space-y-2',
+      jsx(Textarea, {
+        'aria-label': 'Question for memory',
+        value: draft,
+        maxLength: 2000,
+        rows: 3,
+        placeholder: 'What should guide this work? Ask about preferences, decisions, or facts.',
+        onChange: event => { setDraft(event.target.value); mutation.reset() },
+        onKeyDown: event => {
+          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent?.isComposing) {
+            event.preventDefault()
+            ask()
+          }
+        }
+      }),
+      jsxs('div', {
+        className: cn('flex min-w-0 gap-2', layout === 'narrow' ? 'flex-col items-stretch' : 'flex-wrap items-center'),
         children: [
-          jsx(Textarea, {
-            'aria-label': 'Question for memory',
-            value: draft,
-            maxLength: 2000,
-            rows: 3,
-            placeholder: 'What should guide this work? Ask about preferences, decisions, or facts.',
-            onChange: event => { setDraft(event.target.value); mutation.reset() },
-            onKeyDown: event => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent?.isComposing) {
-                event.preventDefault()
-                ask()
-              }
-            }
-          }),
-          jsxs('div', {
-            className: cn('flex min-w-0 gap-2', layout === 'narrow' ? 'flex-col items-stretch' : 'flex-wrap items-center'),
+          jsx(ScopeToggle, { value: scope, label: 'Question scope', onChange: value => { setScope(value); mutation.reset() }, options: [{ id: 'session', label: 'This session' }, { id: 'workspace', label: 'All sessions' }] }),
+          jsxs(Select, {
+            value: level,
+            onValueChange: value => { setLevel(value); mutation.reset() },
             children: [
-              jsx(ScopeToggle, { value: scope, label: 'Question scope', onChange: value => { setScope(value); mutation.reset() }, options: [{ id: 'session', label: 'This session' }, { id: 'workspace', label: 'All sessions' }] }),
-              jsxs(Select, {
-                value: level,
-                onValueChange: value => { setLevel(value); mutation.reset() },
-                children: [
-                  jsx(SelectTrigger, { 'aria-label': 'Reasoning effort', className: layout === 'narrow' ? 'w-full' : 'w-36', children: jsx(SelectValue, {}) }),
-                  jsx(SelectContent, {
-                    'data-honcho-surface': '',
-                    children: [['minimal', 'Minimal effort'], ['low', 'Low effort'], ['medium', 'Medium effort'], ['high', 'High effort']].map(([id, label]) => jsx(SelectItem, { value: id, children: label }, id))
-                  })
-                ]
-              }),
-              jsxs(Button, {
-                className: layout === 'narrow' ? 'justify-center' : 'ml-auto',
-                disabled: !canAsk,
-                onClick: ask,
-                children: [jsx(icons.MessageQuestion, {}), mutation.isPending ? 'Asking…' : 'Ask memory']
+              jsx(SelectTrigger, { 'aria-label': 'Reasoning effort', className: layout === 'narrow' ? 'w-full' : 'w-36', children: jsx(SelectValue, {}) }),
+              jsx(SelectContent, {
+                'data-honcho-surface': '',
+                children: [['minimal', 'Minimal effort'], ['low', 'Low effort'], ['medium', 'Medium effort'], ['high', 'High effort']].map(([id, label]) => jsx(SelectItem, { value: id, children: label }, id))
               })
             ]
           }),
-          jsx('p', {
-            className: 'text-xs leading-5 text-(--ui-text-secondary)',
-            style: PROSE,
-            children: 'Runs a new reasoning call on your Honcho server, which may use credits. Nothing runs until you ask. ⌘/Ctrl + Enter also asks.'
+          jsxs(Button, {
+            className: layout === 'narrow' ? 'justify-center' : 'ml-auto',
+            disabled: !canAsk,
+            onClick: ask,
+            children: [jsx(icons.MessageQuestion, {}), mutation.isPending ? 'Asking…' : 'Ask memory']
           })
         ]
       }),
-      jsx(CapabilityNote, { query: capability, feature: 'ask' }),
-      mutation.error ? jsx(StateLine, { tone: 'warn', title: 'No answer', children: mutation.error.message }) : null,
-      result
-        ? jsxs('section', {
-            'aria-live': 'polite',
-            className: 'min-w-0 space-y-4',
-            children: [
-              jsxs('div', {
-                className: 'space-y-2',
-                children: [
-                  jsx(RegionHeading, {
-                    meta: `New synthesis · ${result.scope === 'session' ? 'This session' : 'All sessions'}`,
-                    actions: jsx(CopyButton, { text: result.answer || '', label: 'Copy answer' }),
-                    children: 'Answer'
-                  }),
-                  jsx('p', { className: 'whitespace-pre-wrap text-sm leading-6 text-foreground', style: PROSE, children: result.answer || 'Honcho returned an empty answer.' }),
-                  result.answer_truncated ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'The answer was shortened for display.' }) : null
-                ]
-              }),
-              result.errors?.length ? jsx(Diagnostics, { errors: result.errors }) : null,
-              result.evidence
-                ? jsxs('section', {
-                    className: 'space-y-2',
-                    children: [
-                      jsx(RegionHeading, { meta: number(result.evidence.conclusions.length + result.evidence.messages.length), children: 'Records Honcho read' }),
-                      jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'Reading a record doesn’t mean it supports the answer.' }),
-                      result.evidence.conclusions.length
-                        ? jsx(ConclusionList, { items: result.evidence.conclusions, onSelect: flags.conclusion_detail ? openConclusion : undefined })
-                        : null,
-                      result.evidence.messages.length
-                        ? jsx('ul', {
-                            className: 'space-y-1',
-                            children: result.evidence.messages.map(item => jsx('li', {
-                              children: jsx(MetaLine, { parts: ['Message', item.peer_id, item.session_id, item.id] })
-                            }, item.id))
-                          })
-                        : null,
-                      !result.evidence.conclusions.length && !result.evidence.messages.length
-                        ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Honcho didn’t report any records.' })
-                        : null,
-                      result.evidence.truncated ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Some records were left out.' }) : null
-                    ]
-                  })
-                : flags.ask
-                  ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'This Honcho server doesn’t report which records it read.' })
-                  : null
-            ]
-          })
+      jsx('p', {
+        className: 'text-xs leading-5 text-(--ui-text-secondary)',
+        style: PROSE,
+        children: 'Runs a new reasoning call on your Honcho server, which may use credits. Nothing runs until you ask. ⌘/Ctrl + Enter also asks.'
+      })
+    ]
+  })
+  const answer = result
+    ? jsxs('section', {
+        'aria-live': 'polite',
+        className: 'min-w-0 space-y-2',
+        children: [
+          jsx(RegionHeading, {
+            meta: `New synthesis · ${result.scope === 'session' ? 'This session' : 'All sessions'}`,
+            actions: jsx(CopyButton, { text: result.answer || '', label: 'Copy answer' }),
+            children: 'Answer'
+          }),
+          result.answer
+            ? jsx(Markdown, { source: result.answer, lead: true })
+            : jsx('p', { className: 'text-sm text-(--ui-text-secondary)', children: 'Honcho returned an empty answer.' }),
+          result.answer_truncated ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'The answer was shortened for display.' }) : null,
+          result.errors?.length ? jsx(Diagnostics, { errors: result.errors }) : null
+        ]
+      })
+    : null
+  const evidence = result?.evidence
+  const records = !result
+    ? null
+    : evidence
+      ? jsxs('section', {
+          'aria-label': 'Records Honcho read',
+          className: 'min-w-0 space-y-3',
+          children: [
+            jsx(RegionHeading, { meta: number(evidence.conclusions.length + evidence.messages.length), children: 'Records Honcho read' }),
+            jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'Reading a record doesn’t mean it supports the answer.' }),
+            evidence.conclusions.length
+              ? jsxs('div', {
+                  className: 'min-w-0 space-y-1',
+                  children: [
+                    jsxs('h3', { className: 'flex items-baseline gap-2 text-xs font-medium text-foreground', children: ['Conclusions', jsx('span', { className: 'font-normal tabular-nums text-(--ui-text-tertiary)', children: number(evidence.conclusions.length) })] }),
+                    jsx(ConclusionList, { items: evidence.conclusions, onSelect: flags.conclusion_detail ? openConclusion : undefined })
+                  ]
+                })
+              : null,
+            evidence.messages.length ? jsx(EvidenceMessages, { items: evidence.messages }) : null,
+            !evidence.conclusions.length && !evidence.messages.length
+              ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Honcho didn’t report any records.' })
+              : null,
+            evidence.truncated ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Some records were left out.' }) : null
+          ]
+        })
+      : flags.ask
+        ? jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'This Honcho server doesn’t report which records it read.' })
         : null
+  const lead = [
+    composer,
+    jsx(CapabilityNote, { query: capability, feature: 'ask' }, 'capability'),
+    mutation.error ? jsx(StateLine, { tone: 'warn', title: 'No answer', children: mutation.error.message }, 'error') : null,
+    answer
+  ]
+
+  // Wide pages read the answer beside the records Honcho consulted.
+  if (wide) {
+    return jsxs('div', {
+      style: { display: 'grid', gap: 40, gridTemplateColumns: 'minmax(0, 40rem) minmax(18rem, 1fr)', alignItems: 'start' },
+      children: [
+        jsxs('div', { className: 'flex min-w-0 flex-col', style: { gap: 20 }, children: lead }),
+        records
+          ? jsx('aside', { className: 'min-w-0', style: { borderLeft: '1px solid var(--ui-stroke-tertiary)', paddingLeft: 24 }, children: records })
+          : null
+      ]
+    })
+  }
+  return jsxs('div', {
+    className: 'flex min-w-0 flex-col',
+    style: { gap: 20, maxWidth: 880 },
+    children: [...lead, records]
+  })
+}
+
+// Honcho reports message evidence by reference only (EvidenceMessageRef has
+// no text), so this lists who wrote it and when.
+function EvidenceMessages({ items }) {
+  return jsxs('div', {
+    className: 'min-w-0 space-y-1',
+    children: [
+      jsxs('h3', { className: 'flex items-baseline gap-2 text-xs font-medium text-foreground', children: ['Messages', jsx('span', { className: 'font-normal tabular-nums text-(--ui-text-tertiary)', children: number(items.length) })] }),
+      jsx('ul', {
+        ...SELECTABLE,
+        className: 'min-w-0 space-y-1.5',
+        children: items.map(item => jsxs('li', {
+          className: 'min-w-0 text-xs leading-5',
+          children: [
+            jsxs('div', {
+              className: 'flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-(--ui-text-secondary)',
+              children: [
+                jsx('span', { className: 'font-mono text-[11px] text-foreground', children: text(item.peer_id) }),
+                item.created_at ? jsx('span', { children: formatTime(item.created_at) }) : null
+              ]
+            }),
+            jsx('div', { className: 'font-mono text-[11px] text-(--ui-text-tertiary)', style: { overflowWrap: 'anywhere' }, children: [item.session_id, item.id].filter(Boolean).join(' · ') })
+          ]
+        }, item.id))
+      }),
+      jsx('p', { className: 'text-xs leading-5 text-(--ui-text-tertiary)', style: PROSE, children: 'Honcho lists the messages it read by reference, without their text.' })
     ]
   })
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
 
-function MessageRow({ message, peers }) {
+// Long messages fold at about a dozen lines, the way core chat clamps long
+// prompts. The fade is an alpha mask, so it follows any theme.
+const MESSAGE_FOLD = '16rem'
+const MESSAGE_MEASURE = '40rem'
+const FOLD_MASK = 'linear-gradient(to bottom, currentColor 65%, transparent)'
+
+function InlineToggle({ open, onClick, children }) {
+  return jsxs('button', {
+    type: 'button',
+    'aria-expanded': open,
+    onClick,
+    className: 'flex items-center gap-1 text-[11px] text-(--ui-text-tertiary) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+    children: [jsx(DisclosureCaret, { open, size: '0.7rem' }), children]
+  })
+}
+
+function MessageRow({ message, peers, dated = true }) {
+  const layout = useLayout()
   const [open, setOpen] = useState(false)
-  const content = text(message.content, '')
-  const long = content.length > 280
+  const [overflowing, setOverflowing] = useState(false)
+  const [showMetadata, setShowMetadata] = useState(false)
+  const bodyRef = useRef(null)
+  const { continued, body } = messageBody(message.content)
   const hasMetadata = Boolean(message.metadata && Object.keys(message.metadata).length > 0)
   const assistant = peers?.ai && message.peer_id === peers.ai
+  const folded = !open
+
+  // Measure the rendered markdown rather than counting characters: a short
+  // table can be taller than a long paragraph.
+  useEffect(() => {
+    const element = bodyRef.current
+    if (!folded || !element) return undefined
+    const update = () => setOverflowing(element.scrollHeight > element.clientHeight + 1)
+    update()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [body, folded])
+
+  const speaker = jsx('span', {
+    className: cn('font-mono text-[11px] font-medium', assistant ? 'text-(--ui-text-secondary)' : 'text-foreground'),
+    style: { overflowWrap: 'anywhere' },
+    children: text(message.peer_id)
+  })
+  const when = message.created_at
+    ? jsx('time', {
+        className: 'text-[11px] tabular-nums text-(--ui-text-tertiary)',
+        dateTime: message.created_at,
+        title: formatTime(message.created_at),
+        children: dated ? formatTime(message.created_at) : formatClock(message.created_at)
+      })
+    : null
+  const rank = message.rank ? jsx('span', { className: 'text-[11px] tabular-nums text-(--ui-text-tertiary)', children: `#${number(message.rank)}` }) : null
+  const content = jsx('div', {
+    ref: bodyRef,
+    style: folded ? { maxHeight: MESSAGE_FOLD, overflow: 'hidden', ...(overflowing ? { WebkitMaskImage: FOLD_MASK, maskImage: FOLD_MASK } : {}) } : undefined,
+    children: body.trim()
+      ? jsx(Markdown, { source: body, measure: MESSAGE_MEASURE })
+      : jsx('p', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Empty message' })
+  })
+  const footerParts = [
+    continued ? jsx('span', { className: 'text-[11px] text-(--ui-text-tertiary)', children: 'Continued from an earlier part of this turn' }, 'continued') : null,
+    message.token_count !== null && message.token_count !== undefined
+      ? jsx('span', { className: 'text-[11px] tabular-nums text-(--ui-text-tertiary)', children: plural(message.token_count, 'token') }, 'tokens')
+      : null,
+    overflowing || open ? jsx(InlineToggle, { open, onClick: () => setOpen(value => !value), children: open ? 'Fold message' : 'Show full message' }, 'fold') : null,
+    hasMetadata ? jsx(InlineToggle, { open: showMetadata, onClick: () => setShowMetadata(value => !value), children: 'Metadata' }, 'metadata') : null
+  ].filter(Boolean)
+  const footer = footerParts.length ? jsx('div', { className: 'flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 pt-1', children: footerParts }) : null
+  const metadata = showMetadata && hasMetadata ? jsx('pre', { className: cn(BLOCK, 'font-mono'), style: { maxWidth: MESSAGE_MEASURE }, children: JSON.stringify(message.metadata, null, 2) }) : null
+
+  if (layout === 'narrow') {
+    return jsxs('article', {
+      ...SELECTABLE,
+      className: 'min-w-0 space-y-1 py-2.5',
+      children: [
+        jsxs('div', { className: 'flex min-w-0 flex-wrap items-baseline gap-x-2', children: [rank, speaker, when] }),
+        content,
+        footer,
+        metadata
+      ]
+    })
+  }
+  // Wider surfaces give the speaker a gutter, like the observation ledger, so
+  // a long conversation scans by who spoke.
   return jsxs('article', {
-    className: 'min-w-0 space-y-1 px-2.5 py-2',
+    ...SELECTABLE,
+    className: 'grid min-w-0 py-2.5',
+    style: { gridTemplateColumns: '9rem minmax(0, 1fr)', columnGap: 16 },
     children: [
-      jsxs('div', {
-        className: 'flex min-w-0 flex-wrap items-center gap-x-2 text-[11px]',
-        children: [
-          message.rank ? jsx('span', { className: 'tabular-nums text-(--ui-text-tertiary)', children: `#${number(message.rank)}` }) : null,
-          jsx('span', { className: cn('font-mono font-medium', assistant ? 'text-(--ui-text-secondary)' : 'text-foreground'), children: text(message.peer_id) }),
-          jsx(MetaLine, {
-            parts: [
-              formatTime(message.created_at),
-              message.token_count !== null && message.token_count !== undefined ? plural(message.token_count, 'token') : null
-            ].filter(Boolean)
-          }),
-          long || hasMetadata
-            ? jsxs('button', {
-                type: 'button',
-                'aria-expanded': open,
-                onClick: () => setOpen(value => !value),
-                className: 'ml-auto flex items-center gap-1 text-[11px] text-(--ui-text-tertiary) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
-                children: [jsx(DisclosureCaret, { open, size: '0.7rem' }), long ? 'Full message' : 'Metadata']
-              })
-            : null
-        ]
-      }),
-      jsx('p', {
-        className: 'whitespace-pre-wrap text-[13px] leading-5 text-foreground',
-        style: PROSE,
-        children: (open || !long ? content : compact(content, 280)) || 'Empty message'
-      }),
-      open && hasMetadata ? jsx('pre', { className: cn(BLOCK, 'font-mono'), children: JSON.stringify(message.metadata, null, 2) }) : null
+      jsxs('div', { className: 'flex min-w-0 flex-col gap-0.5', children: [speaker, when, rank] }),
+      jsxs('div', { className: 'min-w-0 space-y-1', children: [content, footer, metadata] })
     ]
   })
 }
 
-function MessageList({ items, peers }) {
+function DayHeading({ date }) {
+  return jsxs('h4', {
+    className: 'flex min-w-0 items-center gap-3 pb-1.5 text-xs font-medium text-(--ui-text-secondary)',
+    children: [
+      jsx('span', { children: formatDay(date) }),
+      jsx('span', { 'aria-hidden': 'true', className: 'flex-1', style: { borderTop: '1px solid var(--ui-stroke-tertiary)' } })
+    ]
+  })
+}
+
+// Saved messages group by calendar day. Search results keep Honcho's
+// relevance order, so they stay one list with full dates.
+function MessageList({ items, peers, grouped = true }) {
+  const days = grouped ? groupByDay(items, item => localDay(item.created_at)) : [{ date: null, items }]
   return jsx('div', {
-    className: 'min-w-0',
-    style: BLEED,
-    // The shipped stylesheet has no last: variant, so the final row opts out here.
-    children: items.map((item, index) => jsx('div', { className: index < items.length - 1 ? 'border-b border-(--ui-stroke-tertiary)' : undefined, children: jsx(MessageRow, { message: item, peers }) }, item.id))
+    className: 'min-w-0 space-y-4',
+    children: days.map((day, index) => jsxs('section', {
+      className: 'min-w-0',
+      'aria-label': day.date ? formatDay(day.date) : undefined,
+      children: [
+        day.date ? jsx(DayHeading, { date: day.date }) : null,
+        ...day.items.map(item => jsx(MessageRow, { message: item, peers, dated: !day.date }, item.id))
+      ]
+    }, `${day.date}|${index}`))
   })
 }
 
@@ -1615,6 +1894,8 @@ function MessagesSection() {
 
   return jsxs('div', {
     className: 'min-w-0 space-y-4',
+    // Toolbar and transcript share one edge: speaker gutter plus reading measure.
+    style: layout === 'narrow' ? undefined : { maxWidth: `calc(9rem + 16px + ${MESSAGE_MEASURE})` },
     children: [
       jsxs('div', {
         className: cn('flex min-w-0 gap-2', layout === 'narrow' ? 'flex-col items-stretch' : 'flex-wrap items-center'),
@@ -1671,7 +1952,7 @@ function MessagesSection() {
                   children: `Results for “${currentRun.query}”`
                 }),
                 results.data?.items?.length
-                  ? jsx(MessageList, { items: results.data.items, peers })
+                  ? jsx(MessageList, { items: results.data.items, peers, grouped: false })
                   : jsx(Empty, { icon: 'search', title: 'No matching messages', description: results.data?.errors?.[0]?.message || 'Try other words or a wider scope. Results keep Honcho’s relevance order.' })
               ]
             })
@@ -1707,20 +1988,223 @@ function LayerChip({ label, available, detail }) {
 }
 
 function ContextBlock({ title, meta, children }) {
-  return jsxs('section', { className: 'min-w-0 space-y-1', children: [jsx(RegionHeading, { meta, children: title }), children] })
+  return jsxs('section', { className: 'min-w-0 space-y-2', children: [jsx(RegionHeading, { meta, children: title }), children] })
+}
+
+// Reading copy steps up from the 12px metadata size except in a docked pane.
+function readingText(layout) {
+  return layout === 'narrow' ? 'text-xs leading-5' : 'text-[13px] leading-5'
+}
+
+// Summaries, answers and saved messages are agent-written markdown. They go
+// through the host's chat renderer, sized for this surface. media=false: a
+// Honcho session can hold turns written on any machine, so MEDIA: paths must
+// never resolve against this gateway.
+function Markdown({ source, lead = false, measure = '72ch' }) {
+  const layout = useLayout()
+  const size = layout === 'narrow' ? (lead ? 13 : 12) : (lead ? 14 : 13)
+  return jsx('div', {
+    ...SELECTABLE,
+    className: 'min-w-0 text-foreground',
+    style: {
+      maxWidth: measure,
+      overflowWrap: 'anywhere',
+      '--conversation-text-font-size': `${size}px`,
+      '--dt-line-height': '1.6',
+      '--paragraph-gap': '0.6rem'
+    },
+    children: jsx(MessageTextContent, { text: text(source, ''), media: false })
+  })
+}
+
+function ObservationDetails({ details }) {
+  if (!details.length) return null
+  return jsx('ul', {
+    className: 'mt-1 space-y-0.5 text-xs leading-5 text-(--ui-text-secondary)',
+    children: details.map((detail, index) => {
+      const bullet = detail.match(/^[-*•]\s+([\s\S]*)$/)
+      return jsxs('li', {
+        className: 'flex min-w-0 gap-1.5',
+        children: [
+          bullet ? jsx('span', { 'aria-hidden': 'true', className: 'text-(--ui-text-tertiary)', children: '–' }) : null,
+          jsx('span', { className: 'min-w-0', children: inlineMarkdown(bullet ? bullet[1] : detail) })
+        ]
+      }, index)
+    })
+  })
+}
+
+// One calendar day of observations. Times print once per minute so a batch
+// Honcho derived together reads as one cluster.
+function ObservationDay({ day }) {
+  const layout = useLayout()
+  let previous = null
+  return jsxs('div', {
+    className: 'min-w-0',
+    children: [
+      day.date ? jsx(DayHeading, { date: day.date }) : null,
+      jsx('ol', {
+        className: 'min-w-0',
+        children: day.entries.map((entry, index) => {
+          const showTime = Boolean(entry.time) && entry.time !== previous
+          previous = entry.time
+          return jsxs('li', {
+            className: 'grid min-w-0',
+            style: { gridTemplateColumns: `${layout === 'narrow' ? '2.75rem' : '3.25rem'} minmax(0, 1fr)`, columnGap: 12, paddingTop: index === 0 ? 0 : showTime ? 8 : 2 },
+            children: [
+              showTime
+                ? jsx('time', { className: 'font-mono text-[11px] leading-5 tabular-nums text-(--ui-text-tertiary)', dateTime: `${entry.date}T${entry.time}`, title: entry.stamp, children: entry.time })
+                : jsx('span', { 'aria-hidden': 'true' }),
+              jsxs('div', {
+                className: cn('min-w-0 text-foreground', readingText(layout)),
+                style: PROSE,
+                children: [
+                  jsxs('p', {
+                    children: [
+                      entry.label ? jsx('span', { className: 'mr-2 text-[11px] text-(--ui-text-tertiary)', children: entry.label }) : null,
+                      inlineMarkdown(entry.text)
+                    ]
+                  }),
+                  jsx(ObservationDetails, { details: entry.details })
+                ]
+              })
+            ]
+          }, index)
+        })
+      })
+    ]
+  })
+}
+
+function ObservationLedger({ sections }) {
+  const titled = sections.some(section => section.title)
+  return jsx('div', {
+    ...SELECTABLE,
+    className: 'min-w-0 space-y-6',
+    children: sections.map((section, sectionIndex) => {
+      const days = []
+      for (const entry of section.entries) {
+        const last = days[days.length - 1]
+        if (last && last.date === entry.date) last.entries.push(entry)
+        else days.push({ date: entry.date, entries: [entry] })
+      }
+      return jsxs('section', {
+        className: 'min-w-0 space-y-4',
+        'aria-label': sectionTitle(section.title) || undefined,
+        children: [
+          titled && section.title
+            ? jsxs('h3', {
+                className: 'flex items-baseline gap-2 text-xs font-medium text-foreground',
+                children: [sectionTitle(section.title), jsx('span', { className: 'font-normal tabular-nums text-(--ui-text-tertiary)', children: number(section.entries.length) })]
+              })
+            : null,
+          jsx('div', { className: 'min-w-0 space-y-4', children: days.map((day, dayIndex) => jsx(ObservationDay, { day }, `${day.date}|${dayIndex}`)) })
+        ]
+      }, sectionIndex)
+    })
+  })
+}
+
+function PeerCardFacts({ facts, emptyText = 'No peer card yet.' }) {
+  const layout = useLayout()
+  const groups = parsePeerCard(facts)
+  if (!groups.length) return jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: emptyText })
+  const columns = layout === 'narrow' ? '6.5rem minmax(0, 1fr)' : '8.5rem minmax(0, 1fr)'
+  return jsx('div', {
+    ...SELECTABLE,
+    className: 'min-w-0 space-y-4',
+    children: groups.map((group, groupIndex) => {
+      // Unlabelled facts line up with the values when the group has labels.
+      const keyed = group.facts.some(fact => fact.key)
+      return jsxs('section', {
+        className: 'min-w-0 space-y-1',
+        'aria-label': group.label || undefined,
+        children: [
+          group.label ? jsx('h3', { className: 'text-xs font-medium text-(--ui-text-secondary)', children: group.label }) : null,
+          jsx('ul', {
+            className: 'min-w-0',
+            children: group.facts.map((fact, index) => jsxs('li', {
+              className: 'grid min-w-0 py-0.5 text-xs leading-5',
+              style: keyed ? { gridTemplateColumns: columns, columnGap: 12 } : undefined,
+              children: [
+                keyed ? jsx('span', { className: 'text-(--ui-text-tertiary)', style: { overflowWrap: 'anywhere' }, children: fact.key || '' }) : null,
+                jsx('span', { className: 'min-w-0 text-foreground', style: PROSE, children: inlineMarkdown(fact.value) })
+              ]
+            }, index))
+          })
+        ]
+      }, `${group.category}|${groupIndex}`)
+    })
+  })
 }
 
 function ContextSection() {
   const layout = useLayout()
+  const wide = layout === 'wide'
+  const snapshot = useHonchoSnapshot()
   const [budget, setBudget] = useState(2048)
   const query = useHonchoEndpoint('/context', [budget], { token_budget: budget })
   const data = query.data
   const session = data?.session
   const empty = jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Nothing yet.' })
+  const sessionRepresentation = data?.session_representation || session?.representation || ''
+  const observations = parseRepresentation(sessionRepresentation)
+  const observationCount = countObservations(observations)
+  // Peer context is the observer's workspace-wide view. Skip it when Honcho
+  // returned the same text as the session layer.
+  const peerContext = text(data?.peer_context, '').trim() === sessionRepresentation.trim() ? '' : data?.peer_context
+  const workspaceObservations = parseRepresentation(peerContext)
+  const workspaceCount = countObservations(workspaceObservations)
+  const recentMessages = Array.isArray(session?.messages) ? session.messages : []
+  const sessionBlocks = data
+    ? [
+        jsx(ContextBlock, {
+          title: 'Session summary',
+          children: session?.summary ? jsx(Markdown, { source: session.summary }) : empty
+        }, 'summary'),
+        jsx(ContextBlock, {
+          title: 'What Honcho knows in this session',
+          meta: observationCount ? plural(observationCount, 'observation') : null,
+          children: observationCount ? jsx(ObservationLedger, { sections: observations }) : empty
+        }, 'representation'),
+        recentMessages.length
+          ? jsx(ContextBlock, {
+              title: 'Recent messages',
+              meta: plural(recentMessages.length, 'message'),
+              children: jsx(Disclosure, {
+                label: 'Show the messages Honcho would include',
+                indent: false,
+                children: () => jsx(MessageList, { items: recentMessages, peers: { ai: snapshot.data?.config?.ai_peer } })
+              })
+            }, 'messages')
+          : null
+      ]
+    : []
+  const workspaceBlocks = data
+    ? [
+        jsx(ContextBlock, {
+          title: 'Peer card',
+          meta: 'Whole workspace',
+          children: jsx(PeerCardFacts, { facts: data.peer_card, emptyText: 'Nothing yet.' })
+        }, 'card'),
+        workspaceCount
+          ? jsx(ContextBlock, {
+              title: 'What Honcho knows across sessions',
+              meta: plural(workspaceCount, 'observation'),
+              children: jsx(ObservationLedger, { sections: workspaceObservations })
+            }, 'peer-context')
+          : null,
+        jsx('p', {
+          className: 'text-xs leading-5 text-(--ui-text-tertiary)',
+          style: PROSE,
+          children: `The token budget limits the session context Honcho assembles. The representation, peer context and peer card are read separately, so the copied total can exceed it. ${text(data.scope_explanation, '')}`
+        }, 'scope')
+      ]
+    : []
 
   return jsxs('div', {
     className: 'min-w-0 space-y-4',
-    style: { maxWidth: 880 },
+    style: wide ? undefined : { maxWidth: 880 },
     children: [
       jsxs('div', {
         className: cn('flex min-w-0 gap-2', layout === 'narrow' ? 'flex-col items-stretch' : 'flex-wrap items-center'),
@@ -1746,7 +2230,7 @@ function ContextSection() {
         query,
         children: data
           ? jsxs('div', {
-              className: 'min-w-0 space-y-5',
+              className: 'min-w-0 space-y-6',
               children: [
                 jsxs('ul', {
                   'aria-label': 'Context layers',
@@ -1755,29 +2239,32 @@ function ContextSection() {
                     jsx(LayerChip, { label: 'Summary', available: data.layers?.summaries, detail: session?.summary ? plural(session.summary.length, 'char') : 'none' }, 'summary'),
                     jsx(LayerChip, { label: 'Representation', available: data.layers?.conclusions, detail: data.session_representation ? plural(data.session_representation.length, 'char') : 'none' }, 'representation'),
                     jsx(LayerChip, { label: 'Peer card', available: data.layers?.peer_card, detail: plural(data.peer_card?.length || 0, 'fact') }, 'card'),
-                    jsx(LayerChip, { label: 'Messages', available: data.layers?.messages, detail: contextMessageDetail(session) }, 'messages')
+                    jsx(LayerChip, { label: 'Messages', available: data.layers?.messages, detail: contextMessageDetail(session) }, 'messages'),
+                    jsxs('li', {
+                      className: 'flex min-w-0 items-center gap-1.5 text-xs tabular-nums',
+                      children: [
+                        jsx('span', { className: 'text-(--ui-text-secondary)', children: 'Copied total' }),
+                        jsx('span', { className: 'text-(--ui-text-tertiary)', children: `about ${plural(data.token_estimate || 0, 'token')} · ${plural(data.character_count || 0, 'char')}` })
+                      ]
+                    }, 'total')
                   ]
                 }),
-                jsx(ContextBlock, {
-                  title: 'Session summary',
-                  children: session?.summary ? jsx('p', { className: 'whitespace-pre-wrap text-xs leading-5 text-foreground', style: PROSE, children: session.summary }) : empty
-                }),
-                jsx(ContextBlock, {
-                  title: 'What Honcho knows in this session',
-                  children: data.session_representation ? jsx('p', { className: 'whitespace-pre-wrap text-xs leading-5 text-foreground', style: PROSE, children: data.session_representation }) : empty
-                }),
-                jsx(ContextBlock, {
-                  title: 'Peer card',
-                  meta: 'Whole workspace',
-                  children: data.peer_card?.length
-                    ? jsx('ul', { className: 'list-disc space-y-1 pl-4 text-xs leading-5 text-foreground', style: PROSE, children: data.peer_card.map((fact, index) => jsx('li', { children: fact }, index)) })
-                    : empty
-                }),
-                jsx('p', {
-                  className: 'text-xs leading-5 text-(--ui-text-tertiary)',
-                  style: PROSE,
-                  children: `${plural(data.character_count || 0, 'character')} · about ${plural(data.token_estimate || 0, 'token')} of ${number(data.token_budget)}. ${text(data.scope_explanation, '')}`
-                })
+                // Wide pages split by scope: this session on the left, memory
+                // that spans the whole workspace on the right.
+                wide
+                  ? jsxs('div', {
+                      style: { display: 'grid', gap: 40, gridTemplateColumns: 'minmax(0, 38rem) minmax(18rem, 1fr)', alignItems: 'start' },
+                      children: [
+                        jsx('div', { className: 'flex min-w-0 flex-col', style: { gap: 32 }, children: sessionBlocks }),
+                        jsx('aside', {
+                          'aria-label': 'Workspace memory',
+                          className: 'min-w-0 space-y-6',
+                          style: { borderLeft: '1px solid var(--ui-stroke-tertiary)', paddingLeft: 24 },
+                          children: workspaceBlocks
+                        })
+                      ]
+                    })
+                  : jsx('div', { className: 'flex min-w-0 flex-col', style: { gap: 32 }, children: [...sessionBlocks, ...workspaceBlocks] })
               ]
             })
           : null

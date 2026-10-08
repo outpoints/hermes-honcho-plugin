@@ -52,7 +52,7 @@ The remote profile must already have working Honcho configuration. Restart only
 the affected remote Hermes backend so it imports the companion. Do not copy
 Honcho credentials or SSH keys into the plugin or workstation renderer.
 
-Check that both installed manifests report **0.4.0**. Installing from GitHub
+Check that both installed manifests report **0.4.1**. Installing from GitHub
 never includes uncommitted local changes.
 
 ## Acceptance checklist

@@ -3,7 +3,10 @@
 Every image renders the actual `desktop/plugin.js` using Hermes's real native
 controls, shipped stylesheet and Nous light/dark theme. All profile names,
 conversation text, metrics and responses are invented in
-`tests/screenshots/fixtures.mjs`. No live account or Honcho service is connected.
+`tests/screenshots/fixtures.mjs`. The invented text uses Honcho's real formats
+(markdown messages, summaries and answers, `format_as_markdown()`
+representations, categorized peer cards), so the captures show how real memory
+renders. No live account or Honcho service is connected.
 The bar at the top of each capture labels this explicitly. These are isolated UI
 captures, not screenshots of an activated plugin in a running Desktop/SSH session.
 

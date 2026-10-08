@@ -24,11 +24,13 @@ reachable and whether background reasoning is still running.
 - **Ask**: asks Honcho a question about the user, scoped to this session or all
   sessions, at the reasoning effort you choose. On supported servers it lists the
   records Honcho read. Reading a record is not proof that it supports the answer.
-- **Messages**: saved messages for the session, plus Honcho search across the
-  session, the user, the whole workspace, or a named Honcho scope.
-- **Context**: what Honcho would supply right now (summary, representation, peer
-  card, recent messages) at a token budget you pick. This is a fresh build, not
-  a record of what an earlier reply received.
+- **Messages**: saved messages for the session, grouped by day and rendered as
+  they appear in chat, plus Honcho search across the session, the user, the
+  whole workspace, or a named Honcho scope.
+- **Context**: what Honcho would supply right now at a token budget you pick:
+  the session summary, what Honcho knows in this session and across sessions,
+  the peer card, and the recent messages. This is a fresh build, not a record of
+  what an earlier reply received.
 - **Status**: the connection, profile, Honcho session, mapping, configuration,
   and background-reasoning queues for this chat.
 

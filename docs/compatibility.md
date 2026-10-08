@@ -1,5 +1,17 @@
 # Honcho compatibility verification
 
+## 0.4.1 (2026-10-08)
+
+- No backend change. The Python suite (94 tests) passes with the installed
+  runtime. JavaScript suite: 78 tests.
+- The new `MessageTextContent` import first ships in Hermes 0.21.4
+  (v2026.9.21) and is absent in 0.21.3, so the `>=0.21.4` floor is unchanged.
+- Rendering follows Honcho's text formats from Honcho source:
+  `Representation.format_as_markdown()` (stamped explicit and deductive
+  entries, labelled inductive and contradiction entries) and the older
+  `EXPLICIT:` form, `CATEGORY: Key: value` peer cards, and `EvidenceMessageRef`
+  message evidence, which carries no text.
+
 ## 0.4.0 (2026-10-07)
 
 - Python suite (94 tests) passes under real `honcho-ai` 2.2.0, 2.4.0, 2.5.0 and

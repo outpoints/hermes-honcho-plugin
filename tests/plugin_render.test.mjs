@@ -10,7 +10,7 @@ const element = (type, props) => ({ type, props })
 const sdkStubs = Object.fromEntries([
   'Button', 'Codicon', 'CopyButton', 'Dialog', 'DialogContent', 'DialogDescription', 'DialogFooter', 'DialogHeader',
   'DialogTitle', 'DisclosureCaret', 'DropdownMenu', 'DropdownMenuContent', 'DropdownMenuItem', 'DropdownMenuTrigger',
-  'PanelEmpty', 'SearchField', 'SegmentedControl', 'Select', 'SelectContent', 'SelectItem', 'SelectTrigger', 'SelectValue',
+  'MessageTextContent', 'PanelEmpty', 'SearchField', 'SegmentedControl', 'Select', 'SelectContent', 'SelectItem', 'SelectTrigger', 'SelectValue',
   'Skeleton', 'StatusDot', 'Textarea', 'Tip'
 ].map(name => [name, name]))
 const sandbox = vm.createContext({
@@ -182,6 +182,121 @@ test('conclusion rows describe premises without calling them source messages', (
 test('context message readout never invents a zero token total', () => {
   assert.equal(sandbox.contextMessageDetail({ messages: [{}], token_count: null }), '1 recent message · token total not reported')
   assert.equal(sandbox.contextMessageDetail({ messages: [], token_count: 0 }), '0 recent messages · 0 server-reported tokens')
+})
+
+const plain = value => JSON.parse(JSON.stringify(value))
+
+test('representation parsing follows Honcho markdown and legacy formats', () => {
+  const markdown = [
+    '## Explicit Observations', '',
+    '[2026-01-11 09:14:03] Fixture walks on weekends.',
+    '[2026-01-11 09:14:03] Fixture uses `km`.',
+    '[2026-01-12 08:30:55] Fixture prints routes.', '',
+    '## Deductive Observations', '',
+    '[id:abc] [2026-01-14 12:00:10] Routes fit one page.',
+    '   Premises:',
+    '   - Fixture prints routes.', '',
+    '## Inductive Observations', '',
+    ' **Pattern** [high]: Fixture plans ahead.',
+    '   **Type**: tendency', ''
+  ].join('\n')
+  const sections = plain(sandbox.parseRepresentation(markdown))
+  assert.deepEqual(sections.map(section => [section.title, section.entries.length]), [['Explicit Observations', 3], ['Deductive Observations', 1], ['Inductive Observations', 1]])
+  assert.deepEqual(sections[0].entries[0], { stamp: '2026-01-11 09:14:03', date: '2026-01-11', time: '09:14', label: null, text: 'Fixture walks on weekends.', details: [] })
+  assert.equal(sections[1].entries[0].text, 'Routes fit one page.')
+  assert.deepEqual(sections[1].entries[0].details, ['Premises:', '- Fixture prints routes.'])
+  assert.deepEqual(sections[2].entries[0], { stamp: null, date: null, time: null, label: 'High confidence', text: 'Fixture plans ahead.', details: ['**Type**: tendency'] })
+  assert.equal(sections[0].entries[0].label, null)
+  const contradiction = plain(sandbox.parseRepresentation('## Contradictions\n\n **CONTRADICTION**: Said both A and B.\n   **Conflicting statements**:\n   - A\n'))
+  assert.deepEqual([contradiction[0].entries[0].label, contradiction[0].entries[0].text], ['Contradiction', 'Said both A and B.'])
+  // A stamped entry keeps bold text that merely starts the sentence.
+  assert.equal(plain(sandbox.parseRepresentation('[2026-01-11 09:14:03] **Pattern**: kept'))[0].entries[0].text, '**Pattern**: kept')
+  assert.equal(sandbox.sectionTitle('Explicit Observations'), 'Explicit observations')
+
+  const legacy = plain(sandbox.parseRepresentation('EXPLICIT:\n\n1. [2025-01-01 12:00:00] Has a dog\n\nDEDUCTIVE:\n\n'))
+  assert.deepEqual(legacy.map(section => [sandbox.sectionTitle(section.title), section.entries[0].time, section.entries[0].text]), [['Explicit', '12:00', 'Has a dog']])
+})
+
+test('representation parsing tolerates malformed and missing input', () => {
+  for (const value of [null, undefined, '', '\n\n']) assert.deepEqual(plain(sandbox.parseRepresentation(value)), [])
+  const prose = plain(sandbox.parseRepresentation('Free text from an older provider.\nSecond line [not a stamp].'))
+  assert.equal(prose.length, 1)
+  assert.equal(prose[0].title, null)
+  assert.deepEqual(prose[0].entries.map(entry => [entry.time, entry.text]), [[null, 'Free text from an older provider.'], [null, 'Second line [not a stamp].']])
+  assert.equal(sandbox.parseRepresentation(42)[0].entries[0].text, '42')
+})
+
+test('observation days print a time once per minute', () => {
+  sandbox.useContext = () => 'wide'
+  const entries = plain(sandbox.parseRepresentation('[2026-01-11 09:14:03] A\n[2026-01-11 09:14:59] B\n[2026-01-11 10:02:41] C'))[0].entries
+  const day = sandbox.ObservationDay({ day: { date: '2026-01-11', entries } })
+  const rows = day.props.children[1].props.children
+  assert.deepEqual(rows.map(row => row.props.children[0].type), ['time', 'span', 'time'])
+  assert.equal(rows[0].props.children[0].props.title, '2026-01-11 09:14:03')
+  assert.ok(rows[0].props.style.gridTemplateColumns, 'runtime layout must not depend on generated Tailwind classes')
+  assert.equal(day.props.children[0].type, sandbox.DayHeading)
+  assert.match(renderedText(sandbox.DayHeading({ date: '2026-01-11' })), /2026/)
+})
+
+test('peer card facts group by category and keep values literal', () => {
+  const groups = plain(sandbox.parsePeerCard([
+    'IDENTITY: Name: Fixture Person',
+    'ATTRIBUTE: Reference URL: https://example.com/a:b',
+    'ATTRIBUTE: Prefers short notes',
+    'ATTRIBUTE: Should check this before the trip starts: maybe',
+    'INSTRUCTION: Use the fixture org — git@example.com:fixture/repo.git',
+    'Plain fact without a category.',
+    '',
+    null
+  ]))
+  assert.deepEqual(groups.map(group => group.label), ['Identity', 'Attribute', 'Instruction', null])
+  assert.deepEqual(groups[0].facts[0], { key: 'Name', value: 'Fixture Person', source: 'IDENTITY: Name: Fixture Person' })
+  assert.deepEqual(groups[1].facts.map(fact => [fact.key, fact.value]), [
+    ['Reference URL', 'https://example.com/a:b'],
+    [null, 'Prefers short notes'],
+    [null, 'Should check this before the trip starts: maybe']
+  ])
+  assert.equal(groups[2].facts[0].key, null)
+  assert.equal(groups[2].facts[0].value, 'Use the fixture org — git@example.com:fixture/repo.git')
+  assert.deepEqual(groups[3].facts[0], { key: null, value: 'Plain fact without a category.', source: 'Plain fact without a category.' })
+  for (const value of [null, undefined, 'not a list', {}]) assert.deepEqual(plain(sandbox.parsePeerCard(value)), [])
+})
+
+test('multi-line markdown uses the host chat renderer without resolving media', () => {
+  sandbox.useContext = () => 'wide'
+  const tree = sandbox.Markdown({ source: '## Plan\n\n1. **One**\n\nMEDIA:/tmp/fixture.png' })
+  assert.equal(tree.props['data-selectable-text'], 'true')
+  assert.equal(tree.props.children.type, 'MessageTextContent')
+  assert.equal(tree.props.children.props.media, false, 'a Honcho session can hold turns from other machines')
+  assert.equal(tree.props.children.props.text, '## Plan\n\n1. **One**\n\nMEDIA:/tmp/fixture.png')
+  assert.ok(tree.props.style.maxWidth)
+  assert.equal(sandbox.Markdown({ source: null }).props.children.props.text, '')
+  assert.doesNotMatch(source, /function markdownBlocks|function RichText/)
+})
+
+test('inline records render bold and code without HTML', () => {
+  const inline = sandbox.inlineMarkdown('Use **bold** and `code` here.')
+  assert.deepEqual(plain(inline.map(part => typeof part === 'string' ? part : [part.type, part.props.children])), ['Use ', ['strong', 'bold'], ' and ', ['code', 'code'], ' here.'])
+  assert.equal(sandbox.inlineMarkdown('<script>x</script>'), '<script>x</script>')
+  assert.equal(sandbox.inlineMarkdown(null), '')
+})
+
+test('Hermes continuation chunks are labelled, not shown as raw markers', () => {
+  assert.deepEqual(plain(sandbox.messageBody('[continued] rest of the turn')), { continued: true, body: 'rest of the turn' })
+  assert.deepEqual(plain(sandbox.messageBody('Quoting [continued] mid-sentence')), { continued: false, body: 'Quoting [continued] mid-sentence' })
+  for (const value of [null, undefined, '']) assert.deepEqual(plain(sandbox.messageBody(value)), { continued: false, body: '' })
+})
+
+test('messages group by calendar day in either order and tolerate bad timestamps', () => {
+  const days = plain(sandbox.groupByDay(
+    [{ id: 'c', at: '2026-01-15' }, { id: 'b', at: '2026-01-15' }, { id: 'a', at: '2026-01-14' }, { id: 'z', at: null }],
+    item => item.at
+  ))
+  assert.deepEqual(days.map(day => [day.date, day.items.map(item => item.id)]), [['2026-01-15', ['c', 'b']], ['2026-01-14', ['a']], [null, ['z']]])
+  assert.equal(sandbox.localDay('not a date'), null)
+  assert.equal(sandbox.localDay(null), null)
+  assert.match(sandbox.localDay('2026-01-15T12:00:00Z'), /^2026-01-1[456]$/)
+  assert.equal(sandbox.formatClock('nope'), null)
 })
 
 test('blocking states name the condition and the next step', () => {

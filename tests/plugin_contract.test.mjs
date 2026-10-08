@@ -86,6 +86,18 @@ test('keeps native styling tokenized and free of custom decorative chrome', () =
   assert.match(source, /--ui-text-secondary/)
 })
 
+test('memory content renders through the host and stays selectable', () => {
+  // The shell sets user-select: none on body; content must opt back in.
+  assert.match(source, /'data-selectable-text': 'true'/)
+  for (const component of ['Markdown', 'ObservationLedger', 'PeerCardFacts', 'MessageRow', 'EvidenceMessages']) {
+    const start = source.indexOf(`\nfunction ${component}(`)
+    assert.ok(start >= 0, component)
+    const end = source.indexOf('\nfunction ', start + 1)
+    assert.match(source.slice(start, end), /\.\.\.SELECTABLE/, `${component} must opt into text selection`)
+  }
+  assert.match(source, /jsx\(MessageTextContent, \{ text: text\(source, ''\), media: false \}\)/)
+})
+
 test('layout follows the rendered pane width instead of global viewport breakpoints', () => {
   assert.match(source, /new ResizeObserver/)
   assert.match(source, /function layoutForWidth/)

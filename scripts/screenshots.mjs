@@ -29,7 +29,7 @@ const pluginSource = await readFile(join(repo, 'desktop/plugin.js'), 'utf8')
 const uiModules = {
   Button: 'components/ui/button', Codicon: 'components/ui/codicon', CopyButton: 'components/ui/copy-button',
   Dialog: 'components/ui/dialog', DialogContent: 'components/ui/dialog', DialogDescription: 'components/ui/dialog', DialogFooter: 'components/ui/dialog', DialogHeader: 'components/ui/dialog', DialogTitle: 'components/ui/dialog',
-  DisclosureCaret: 'components/ui/disclosure-caret',
+  DisclosureCaret: 'components/ui/disclosure-caret', MessageTextContent: 'components/assistant-ui/markdown-text',
   DropdownMenu: 'components/ui/dropdown-menu', DropdownMenuContent: 'components/ui/dropdown-menu', DropdownMenuItem: 'components/ui/dropdown-menu', DropdownMenuTrigger: 'components/ui/dropdown-menu',
   PanelEmpty: 'app/overlays/panel', SearchField: 'components/ui/search-field', SegmentedControl: 'components/ui/segmented-control',
   Select: 'components/ui/select', SelectContent: 'components/ui/select', SelectItem: 'components/ui/select', SelectTrigger: 'components/ui/select', SelectValue: 'components/ui/select',
@@ -49,7 +49,9 @@ export function applyDemoTheme(mode) {
  const c = isDark ? nousTheme.darkColors : nousTheme.colors;
  const typo = { ...DEFAULT_TYPOGRAPHY, ...nousTheme.typography };
  const midground = c.midground ?? c.ring, PRIMARY_SOLID_FOREGROUND = '#fcfcfc';
- const chatFontFamily = '', resolveChatFontFamily = (_, fallback) => fallback;
+ // Host-only knobs and the chat font picker are stubbed. The copied seed block
+ // must keep running when the host adds calls inside it.
+ const chatFontFamily = '', resolveChatFontFamily = (_, fallback) => fallback, applyTypographyKnobs = () => {};
  root.classList.toggle('dark', isDark); root.style.colorScheme = mode;
  ${themeTokens}
 }`
@@ -77,9 +79,11 @@ const virtual = {
   // PanelEmpty shares a module with overlay chrome it never renders.
   'overlay-view': "export const OVERLAY_TOP_CLEARANCE=''; export function OverlayView(props){ return props.children }",
 }
+// Generic arrows (`<T,>(...)`) only parse as TypeScript, not TSX.
+const hostLoader = file => file.endsWith('.css') ? 'css' : file.endsWith('.tsx') ? 'tsx' : file.endsWith('.ts') ? 'ts' : 'tsx'
 let server, browser
 try {
-  await build({ entryPoints: [join(repo, 'tests/screenshots/app.mjs')], outfile: join(work, 'app.js'), bundle: true, format: 'esm', jsx: 'automatic', platform: 'browser', nodePaths: [join(hostRoot, 'node_modules')], define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'isolated-host-ui', setup(builder) {
+  await build({ entryPoints: [join(repo, 'tests/screenshots/app.mjs')], outfile: join(work, 'app.js'), bundle: true, format: 'esm', jsx: 'automatic', platform: 'browser', nodePaths: [join(hostRoot, 'node_modules')], define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': JSON.stringify({ DEV: false, PROD: true, MODE: 'production', SSR: false, BASE_URL: '/' }) }, plugins: [{ name: 'isolated-host-ui', setup(builder) {
     builder.onResolve({ filter: /.*/ }, args => {
       if (args.path in virtual) return { path: args.path, namespace: 'demo' }
       if (args.path === './overlay-view') return { path: 'overlay-view', namespace: 'demo' }
@@ -89,7 +93,7 @@ try {
     builder.onLoad({ filter: /.*/, namespace: 'host-source' }, async args => {
       const target = join(src, args.path)
       for (const suffix of ['', '.ts', '.tsx', '/index.ts', '/index.tsx']) {
-        try { return { contents: await readFile(target + suffix, 'utf8'), loader: (target + suffix).endsWith('.css') ? 'css' : 'tsx', resolveDir: dirname(target + suffix) } } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'EISDIR') throw error }
+        try { return { contents: await readFile(target + suffix, 'utf8'), loader: hostLoader(target + suffix), resolveDir: dirname(target + suffix) } } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'EISDIR') throw error }
       }
       throw new Error(`Missing host module: ${args.path}`)
     })

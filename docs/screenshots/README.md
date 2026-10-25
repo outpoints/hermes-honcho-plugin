@@ -22,6 +22,10 @@ captures, not screenshots of an activated plugin in a running Desktop/SSH sessio
 | [Messages](messages.png) | Saved messages |
 | [Message search](search.png) | Scoped message search |
 | [Context](context.png) | What Honcho would supply now |
+| [Summary and budget](context-summary-budget.png) | A stored summary too large for the chosen preview budget |
+| [Custom instructions](instructions.png) | Honcho 3.3+ instructions beside the summary and peer card |
+| [Instructions, pane](instructions-pane.png) | The same in the docked pane |
+| [Ask and instructions](ask-instructions.png) | The instructions an answer will follow |
 | [Status](diagnostics.png) | Connection, profile, mapping and queues |
 | [Add to session](add-to-session.png) | Target confirmation, no write |
 | [Correction](correction.png) | Additive correction confirmation |

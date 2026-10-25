@@ -179,6 +179,112 @@ test('conclusion rows describe premises without calling them source messages', (
   assert.match(source, /Premises are earlier conclusions, not source messages\./)
 })
 
+// Stub hooks and expand every function component, so assertions read the
+// whole subtree a user would see.
+function withHooks(layout = 'wide') {
+  sandbox.useContext = () => layout
+  sandbox.useState = initial => [typeof initial === 'function' ? initial() : initial, () => {}]
+  sandbox.useRef = () => ({ current: null })
+  sandbox.useEffect = () => {}
+}
+function deepText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (Array.isArray(node)) return node.map(deepText).join(' ')
+  if (typeof node === 'object') return typeof node.type === 'function' ? deepText(node.type(node.props)) : deepText(node.props?.children)
+  return String(node)
+}
+const entry = (module, source, text = null, off = false) => ({ module, source, text, text_truncated: false, off })
+const instructions33 = {
+  ok: true, errors: [], capabilities: { instructions: true }, configured: true,
+  shared: entry(null, 'workspace.shared', 'Write in plain English.'),
+  agents: [
+    entry('reasoning', 'workspace.shared', 'Write in plain English.'),
+    entry('summary', 'workspace.summary', 'Keep summaries short.'),
+    entry('dialectic', 'session.dialectic', null, true),
+    entry('dream', 'workspace.shared', 'Write in plain English.'),
+    entry('peer_card', null)
+  ],
+  across_sessions: entry('dialectic', 'workspace.shared', 'Write in plain English.')
+}
+
+test('stored summaries are preferred over the budgeted preview, as Honcho selects them', () => {
+  const short = { content: 'Short.', token_count: 900 }, long = { content: 'Long.', token_count: 3600 }
+  assert.equal(sandbox.storedSummary({ short, long }), long)
+  assert.equal(sandbox.storedSummary({ short, long: { ...long, token_count: 800 } }), short)
+  assert.equal(sandbox.storedSummary({ short: null, long }), long)
+  assert.equal(sandbox.storedSummary({ short: { content: '', token_count: 4 }, long: null }), null)
+  assert.equal(sandbox.storedSummary(null), null)
+})
+
+test('a summary that does not fit names a budget floor instead of claiming there is none', () => {
+  assert.equal(sandbox.summaryBudgetFloor({ short: { content: 'x', token_count: 1500 }, long: { content: 'y', token_count: 6000 } }), 3750)
+  assert.equal(sandbox.summaryBudgetFloor({ short: { content: 'x', token_count: null }, long: null }), null)
+  assert.equal(sandbox.summaryBudgetFloor({ short: null, long: null }), null)
+  assert.equal(sandbox.summaryBudgetFloor(undefined), null)
+  assert.match(source, /Honcho has a summary, but it doesn’t fit this budget\./)
+})
+
+test('the context preview starts from Hermes\'s own cap, or the largest preview when uncapped', () => {
+  assert.equal(sandbox.contextBudgetFor(4000), 4000)
+  assert.equal(sandbox.contextBudgetFor(null), 32000)
+  assert.equal(sandbox.contextBudgetFor(0), 32000)
+  assert.equal(sandbox.contextBudgetFor(100), 256)
+  assert.equal(sandbox.contextBudgetFor(250000), 32000)
+  assert.equal(sandbox.contextBudgetFor('4000.5'), 32000)
+})
+
+test('custom instructions show each agent once, with Honcho\'s source labels', () => {
+  withHooks()
+  const rendered = deepText(sandbox.InstructionsList({ data: instructions33 }))
+  for (const label of ['Shared', 'Conclusions', 'Summaries', 'Answers', 'Dreams', 'Peer card']) assert.match(rendered, new RegExp(label))
+  assert.equal(rendered.match(/Write in plain English\./g).length, 1, 'shared text renders once')
+  assert.equal(rendered.match(/Uses the shared text/g).length, 2)
+  assert.match(rendered, /Keep summaries short\. +workspace\.summary/)
+  assert.match(rendered, /Off +session\.dialectic/)
+  assert.match(rendered, /Not set/)
+  assert.match(rendered, /Peer card instructions are added to the dream instructions\./)
+  assert.equal(sandbox.instructionsMeta(instructions33), '3 set')
+})
+
+test('custom instructions say none are set, and surface read failures', () => {
+  withHooks('narrow')
+  assert.match(deepText(sandbox.InstructionsList({ data: { ...instructions33, configured: false } })), /None set\. Honcho uses its built-in prompts\./)
+  assert.equal(sandbox.instructionsMeta({ configured: false }), 'None set')
+  const failed = sandbox.InstructionsList({ data: { ...instructions33, errors: [{ scope: 'instructions.session', message: 'Unreadable' }] } })
+  assert.equal(failed.type, sandbox.Diagnostics)
+})
+
+test('instructions stay hidden unless the backend confirms Honcho 3.3', () => {
+  withHooks()
+  const original = sandbox.useInstructions
+  try {
+    for (const data of [undefined, { capabilities: { instructions: false }, reason: 'Custom instructions need Honcho 3.3.0 or later.' }]) {
+      sandbox.useInstructions = () => ({ data })
+      assert.equal(sandbox.InstructionsRegion(), null)
+      assert.equal(sandbox.InstructionsDisclosure(), null)
+      assert.equal(sandbox.AnswerInstructions({ scope: 'session' }), null)
+    }
+  } finally {
+    sandbox.useInstructions = original
+  }
+})
+
+test('Ask names the instructions its answer follows for the chosen scope', () => {
+  withHooks()
+  const original = sandbox.useInstructions
+  try {
+    sandbox.useInstructions = () => ({ data: instructions33 })
+    assert.match(deepText(sandbox.AnswerInstructions({ scope: 'session' })), /Custom instructions are off for answers in this session\. +session\.dialectic/)
+    const across = deepText(sandbox.AnswerInstructions({ scope: 'workspace' }))
+    assert.match(across, /Answers across sessions follow custom instructions\. +workspace\.shared +Show/)
+    assert.doesNotMatch(across, /Write in plain English/, 'text stays folded until asked for')
+    sandbox.useInstructions = () => ({ data: { ...instructions33, configured: false, agents: instructions33.agents.map(item => ({ ...item, source: null, text: null, off: false })), across_sessions: entry('dialectic', null) } })
+    assert.equal(sandbox.AnswerInstructions({ scope: 'session' }), null)
+  } finally {
+    sandbox.useInstructions = original
+  }
+})
+
 test('context message readout never invents a zero token total', () => {
   assert.equal(sandbox.contextMessageDetail({ messages: [{}], token_count: null }), '1 recent message · token total not reported')
   assert.equal(sandbox.contextMessageDetail({ messages: [], token_count: 0 }), '0 recent messages · 0 server-reported tokens')

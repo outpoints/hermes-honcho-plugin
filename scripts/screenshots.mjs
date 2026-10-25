@@ -166,6 +166,38 @@ try {
     await capture(file)
   }
   await checkAccessibility('status')
+
+  // A preview budget too small for the stored summary says so and offers a
+  // larger one, instead of reporting that no summary exists.
+  await tab('Context').click(); await settled()
+  // Hermes sets no cap in the fixture profile, so the preview starts at its largest.
+  assert.equal((await page.getByRole('combobox', { name: 'Token budget' }).innerText()).trim(), '32,000 tokens')
+  assert.equal(await page.evaluate(() => { const box = document.querySelector('[aria-label="Token budget"]'); return box.scrollWidth <= box.clientWidth }), true, 'Budget label must fit its control')
+  await page.getByRole('combobox', { name: 'Token budget' }).click()
+  await page.getByRole('option', { name: /^2,048 tokens/ }).click()
+  await page.getByText('Honcho has a summary, but it doesn’t fit this budget.', { exact: false }).waitFor()
+  await page.getByRole('button', { name: 'Try 4,096 tokens', exact: true }).waitFor()
+  await capture('context-summary-budget.png')
+  await checkAccessibility('context-summary-budget')
+
+  // Honcho 3.3 custom instructions, beside the summary and peer card.
+  await tab('Memory').click(); await settled()
+  await page.setViewportSize({ width: 1200, height: 1500 })
+  await page.getByRole('heading', { name: 'Custom instructions', exact: true }).waitFor()
+  assert.equal(await page.getByText('Write about demo-user in plain English.', { exact: false }).count(), 1, 'Shared text renders once')
+  await page.locator('aside').first().screenshot({ path: join(output, 'instructions.png'), animations: 'disabled' })
+  captures.push({ file: 'instructions.png', element: 'aside' })
+  await checkAccessibility('instructions')
+  await page.setViewportSize({ width: 1200, height: 800 })
+
+  // Ask names the instructions its answer will follow.
+  await tab('Ask').click(); await settled()
+  await page.getByText('Answers in this session follow custom instructions.', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Show', exact: true }).click()
+  await page.getByText('Answer in two or three sentences', { exact: false }).waitFor()
+  await capture('ask-instructions.png')
+  await checkAccessibility('ask-instructions')
+  assert.equal(await page.evaluate(() => window.demoCalls.some(call => call.path.startsWith('/ask'))), false, 'Showing instructions must not ask')
   await tab('Messages').click(); await settled()
   await page.getByRole('textbox', { name: 'Search messages', exact: true }).fill('routes')
   await page.getByRole('textbox', { name: 'Search messages', exact: true }).press('Enter')
@@ -240,6 +272,12 @@ try {
   await page.setViewportSize({ width: 380, height: 1100 })
   await page.goto(`${origin}/?pane=1`); await ready(); await settled(); await capture('memory-pane.png')
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Narrow pane must not overflow')
+  await page.getByRole('button', { name: /^Custom instructions/ }).click()
+  await page.getByRole('list', { name: 'Custom instructions by agent' }).waitFor()
+  await capture('instructions-pane.png')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Narrow instructions must not overflow')
+  await checkAccessibility('instructions-pane')
+  await page.getByRole('button', { name: /^Custom instructions/ }).click()
   await page.getByRole('button', { name: /Morning-length routes/ }).click()
   await page.getByRole('button', { name: 'All conclusions' }).waitFor(); await settled()
   await capture('memory-pane-detail.png')
@@ -252,6 +290,7 @@ try {
   await page.setViewportSize({ width: 1200, height: 800 })
 
   await page.goto(`${origin}/?scenario=unsupported`); await ready(); await settled()
+  assert.equal(await page.getByText('Custom instructions').count(), 0, 'Servers before 3.3.0 show no instructions')
   await tab('Ask').click()
   await capture('unsupported.png')
   assert.equal(await page.evaluate(() => window.demoCalls.some(call => call.path.startsWith('/ask'))), false)
@@ -338,7 +377,7 @@ try {
     host_commit: execFileSync('git', ['-C', hostRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     plugin_sha256: (await import('node:crypto')).createHash('sha256').update(pluginSource).digest('hex'),
     captures, accessibility, browser_errors: errors, external_requests: blocked, upload_requests: 0,
-    exercised: ['landing does not reason or write', 'every section', 'conclusion search submits on Enter only', 'message search', 'premise inspection', 'explicit memory question', 'accessed record opens in the inspector', 'correction cancel without requests', 'confirmed synthetic correction', 'wide, pane, and inspector layouts in light and dark', 'unsupported capabilities', 'unknown write without retry', 'pending write dismissal and duplicate-submit guard', 'focus change suppresses stale answers and prevents confirmed write', 'another local profile reads in its owner profile', 'draft chat without a session', 'disconnected state', 'pane focus handoff retains inspected tile', 'portalled menu preserves inspection target', 'host sidebar navigation preserves inspection target without reading host markup']
+    exercised: ['landing does not reason or write', 'every section', 'conclusion search submits on Enter only', 'message search', 'premise inspection', 'explicit memory question', 'accessed record opens in the inspector', 'correction cancel without requests', 'confirmed synthetic correction', 'wide, pane, and inspector layouts in light and dark', 'unsupported capabilities', 'unknown write without retry', 'pending write dismissal and duplicate-submit guard', 'focus change suppresses stale answers and prevents confirmed write', 'another local profile reads in its owner profile', 'draft chat without a session', 'disconnected state', 'pane focus handoff retains inspected tile', 'portalled menu preserves inspection target', 'host sidebar navigation preserves inspection target without reading host markup', 'stored summary shown when the preview budget is too small', 'custom instructions on wide and pane layouts and under Ask', 'no instructions on servers before 3.3.0']
   }
   await writeFile(join(output, 'verification.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))

@@ -7,7 +7,7 @@ description: "Desktop workbench for the Honcho memory behind the focused chat: r
 maintainer: outpoints
 tier: community
 category: desktop
-version: "0.4.1"
+version: "0.5.0"
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/outpoints/hermes-honcho-plugin
 image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/RELEASE_COMMIT_SHA/docs/catalog/banner.png

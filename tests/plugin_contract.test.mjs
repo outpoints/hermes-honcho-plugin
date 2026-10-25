@@ -68,7 +68,7 @@ test('implements every section and bounded backend endpoint', () => {
   for (const section of ['memory', 'ask', 'messages', 'context', 'status']) {
     assert.match(source, new RegExp(`id: '${section}'`))
   }
-  for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/conclusion-search', '/conclusion-detail', '/context', '/search', '/scopes', '/activity', '/ask', '/capabilities', '/correction-ticket', '/corrections', '/upload-ticket']) {
+  for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/conclusion-search', '/conclusion-detail', '/context', '/search', '/scopes', '/activity', '/ask', '/capabilities', '/correction-ticket', '/corrections', '/upload-ticket', '/instructions']) {
     assert.match(source, new RegExp(`'${endpoint}'`))
   }
   assert.match(source, /const PAGE_SIZE = 25/)
@@ -89,7 +89,7 @@ test('keeps native styling tokenized and free of custom decorative chrome', () =
 test('memory content renders through the host and stays selectable', () => {
   // The shell sets user-select: none on body; content must opt back in.
   assert.match(source, /'data-selectable-text': 'true'/)
-  for (const component of ['Markdown', 'ObservationLedger', 'PeerCardFacts', 'MessageRow', 'EvidenceMessages']) {
+  for (const component of ['Markdown', 'ObservationLedger', 'PeerCardFacts', 'MessageRow', 'EvidenceMessages', 'InstructionsList']) {
     const start = source.indexOf(`\nfunction ${component}(`)
     assert.ok(start >= 0, component)
     const end = source.indexOf('\nfunction ', start + 1)

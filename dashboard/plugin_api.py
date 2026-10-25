@@ -12,14 +12,14 @@ import secrets
 import threading
 import time
 from typing import Any, Callable, Literal, cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 router = APIRouter()
 
-PLUGIN_VERSION = "0.4.1"
+PLUGIN_VERSION = "0.5.0"
 REQUEST_TIMEOUT_SECONDS = 20
 UPLOAD_TIMEOUT_SECONDS = 120
 UPLOAD_TICKET_TTL_SECONDS = 120
@@ -165,6 +165,10 @@ class ActivityRequest(SnapshotRequest):
     """Queue and reasoning activity for the focused Honcho session."""
 
 
+class InstructionsRequest(SnapshotRequest):
+    """Custom instructions in effect for the focused Honcho session."""
+
+
 class UploadTicketRequest(SnapshotRequest):
     """A confirmed local file selection bound to the focused Honcho session."""
 
@@ -302,15 +306,21 @@ def _verify_existing_workspace(client: Any, workspace_id: str) -> bool:
             "Installed honcho-ai cannot verify an existing workspace without creating it."
         )
 
-    page = list_workspaces(filters={"id": workspace_id}, page=1, size=1)
-    items = getattr(page, "items", None)
-    if not isinstance(items, list):
-        raise RuntimeError("Honcho returned a malformed workspace list response.")
-
-    found = any(
-        (item if isinstance(item, str) else getattr(item, "id", None)) == workspace_id
-        for item in items
-    )
+    try:
+        page = list_workspaces(filters={"id": workspace_id}, page=1, size=1)
+    except ValidationError:
+        # The SDK rejected a healthy response (see _raw_list_page). Read the
+        # same non-creating list without its models.
+        items = _raw_list_page(client, WORKSPACES_LIST_PATH, {"id": workspace_id})["items"]
+        found = any(isinstance(item, dict) and item.get("id") == workspace_id for item in items)
+    else:
+        items = getattr(page, "items", None)
+        if not isinstance(items, list):
+            raise RuntimeError("Honcho returned a malformed workspace list response.")
+        found = any(
+            (item if isinstance(item, str) else getattr(item, "id", None)) == workspace_id
+            for item in items
+        )
     if not found:
         return False
 
@@ -378,6 +388,10 @@ def _load_hermes_session_metadata(session_id: str | None) -> dict[str, str]:
                 pass
 
 
+def _positive_int(value: Any) -> int | None:
+    return value if type(value) is int and value > 0 else None
+
+
 def _base_snapshot(request: SnapshotRequest, config: Any) -> dict[str, Any]:
     configured = bool(config.api_key or config.base_url)
     return {
@@ -400,6 +414,9 @@ def _base_snapshot(request: SnapshotRequest, config: Any) -> dict[str, Any]:
             "write_frequency": config.write_frequency,
             "user_peer": config.peer_name,
             "ai_peer": config.ai_peer,
+            # Hermes's cap on the context it requests. None means Hermes sends
+            # no cap and Honcho uses its own server default.
+            "context_tokens": _positive_int(getattr(config, "context_tokens", None)),
         },
         "totals": {"sessions": None, "peers": None, "conclusions": None},
         "queue": None,
@@ -452,9 +469,71 @@ def _is_route_mismatch(request: SnapshotRequest) -> bool:
     )
 
 
+def _raw_list_page(
+    client: Any, path: str, filters: dict[str, Any] | None, *, size: int = 1
+) -> dict[str, Any]:
+    """Read one page of a Honcho list endpoint as JSON, without SDK models.
+
+    honcho-ai 2.5.1 and older forbid unknown keys inside configuration
+    sections. Honcho 3.3 stores `custom_instructions` in `summary`, `dream`
+    and `peer_card`, so those SDKs raise ValidationError on a healthy
+    workspace or session list. List endpoints never create resources, so this
+    keeps the same read-only guarantee. It uses the client's own transport and
+    credentials, as the OpenAPI version probe does.
+    """
+
+    post = getattr(getattr(client, "_http", None), "post", None)
+    if not callable(post):
+        raise RuntimeError("Installed honcho-ai has no transport for a model-free list read.")
+    page = post(path, body={"filters": filters} if filters else None, query={"page": 1, "size": size})
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        raise RuntimeError("Honcho returned a malformed list response.")
+    return page
+
+
+WORKSPACES_LIST_PATH = "/v3/workspaces/list"
+
+
+def _sessions_list_path(client: Any) -> str:
+    workspace_id = _clean(getattr(client, "workspace_id", None))
+    if not workspace_id:
+        raise RuntimeError("The Honcho client has no workspace.")
+    return f"/v3/workspaces/{quote(workspace_id, safe='')}/sessions/list"
+
+
+def _session_handle(client: Any, session_id: str) -> Any:
+    """Build the SDK's Session object for a verified ID without a request.
+
+    `Honcho.session()` is get-or-create, so it is never used for reads. This is
+    the constructor the SDK's own list transform calls, taken from the SDK that
+    built this client.
+    """
+
+    package = type(client).__module__.rpartition(".")[0]
+    session_class = getattr(importlib.import_module(f"{package}.session"), "Session", None) if package else None
+    if session_class is None:
+        raise RuntimeError("Installed honcho-ai has no Session type for a verified session.")
+    return session_class(session_id, client)
+
+
+def _sessions_total(client: Any) -> int:
+    try:
+        return client.sessions(page=1, size=1).total
+    except ValidationError:
+        return int(_raw_list_page(client, _sessions_list_path(client), None).get("total") or 0)
+
+
 def _existing_session(client: Any, session_id: str) -> Any | None:
     """Never trust server-side filtering as proof of an exact session match."""
-    page = client.sessions(filters={"id": session_id}, page=1, size=1)
+    try:
+        page = client.sessions(filters={"id": session_id}, page=1, size=1)
+    except ValidationError:
+        items = _raw_list_page(client, _sessions_list_path(client), {"id": session_id})["items"]
+        if not items:
+            return None
+        if len(items) != 1 or not isinstance(items[0], dict) or items[0].get("id") != session_id:
+            raise RuntimeError("Honcho returned a session that did not match the requested ID.")
+        return _session_handle(client, session_id)
     items = getattr(page, "items", None)
     if not isinstance(items, list):
         raise RuntimeError("Honcho returned a malformed session list response.")
@@ -1230,6 +1309,9 @@ def _collect_context(
             "session": None,
             "peer_context": None,
             "session_representation": None,
+            # Both stored summaries, independent of the token budget. None
+            # until the read succeeds, so absent is not reported as empty.
+            "stored_summaries": None,
             "peer_card": [],
             "layers": {
                 "peer_card": False,
@@ -1351,6 +1433,25 @@ def _collect_context(
             {"scope": "context.session", "message": _safe_error(exc)}
         )
 
+    # Honcho gives the summary at most 40% of the budget left after the
+    # representation and peer card, and returns none when it does not fit.
+    # Read the stored summaries too, so a small preview budget is never shown
+    # as "no summary".
+    try:
+        summaries_operation = getattr(current_session, "summaries", None)
+        if not callable(summaries_operation):
+            raise RuntimeError("Installed honcho-ai does not expose stored summaries.")
+        stored = summaries_operation()
+        result["stored_summaries"] = {
+            kind: _summary_payload(getattr(stored, f"{kind}_summary", None))
+            for kind in ("short", "long")
+        }
+        successful_reads += 1
+    except Exception as exc:
+        result["errors"].append(
+            {"scope": "context.summaries", "message": _safe_error(exc)}
+        )
+
     try:
         peer_context_operation = getattr(observer, "context", None)
         if not callable(peer_context_operation) or not _supports_parameter(
@@ -1460,6 +1561,21 @@ def _collect_context(
         result["ok"] = False
         result["state"] = "unavailable"
     return result
+
+
+def _summary_payload(summary: Any) -> dict[str, Any] | None:
+    if summary is None:
+        return None
+    content = getattr(summary, "content", None)
+    if not isinstance(content, str):
+        raise ValueError("Honcho returned a malformed summary.")
+    token_count = getattr(summary, "token_count", None)
+    return {
+        "content": content[:MAX_MESSAGE_CONTENT_CHARS],
+        "content_truncated": len(content) > MAX_MESSAGE_CONTENT_CHARS,
+        "token_count": token_count if type(token_count) is int and token_count >= 0 else None,
+        "created_at": _iso(getattr(summary, "created_at", None)),
+    }
 
 
 def _supports_parameter(operation: Callable[..., Any], name: str) -> bool:
@@ -1693,16 +1809,21 @@ def _collect_conclusion_search(request: ConclusionSearchRequest, **factories: An
     return result
 
 
-def _server_supports_evidence(client: Any) -> bool:
+def _server_version(client: Any) -> tuple[int, int, int] | None:
     # Version metadata has no creating SDK helper. The selected SDK transport
     # preserves host authentication. Unknown servers never receive new flags.
     try:
         document = client._http.get("/openapi.json", timeout=3)
         version = document.get("info", {}).get("version", "")
         match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", version)
-        return bool(match and tuple(map(int, match.groups())) >= (3, 2, 0))
+        return cast(tuple[int, int, int], tuple(map(int, match.groups()))) if match else None
     except Exception:
-        return False
+        return None
+
+
+def _server_supports_evidence(client: Any) -> bool:
+    version = _server_version(client)
+    return bool(version and version >= (3, 2, 0))
 
 
 def _workbench_capabilities(client: Any, observer: Any, scope: Any) -> dict:
@@ -1915,6 +2036,120 @@ def _collect_correction(request: CorrectionRequest, **factories: Any) -> dict:
     return result
 
 
+# Honcho 3.3 agents that read `custom_instructions`, in resolution order of
+# src/utils/config_helpers.py. peer_card never falls back to the shared value:
+# Honcho adds it to the dream instructions instead.
+INSTRUCTION_MODULES = ("reasoning", "summary", "dialectic", "dream", "peer_card")
+INSTRUCTIONS_MIN_SERVER = (3, 3, 0)
+MAX_INSTRUCTION_CHARS = 8_000
+
+
+def _instruction_values(configuration: Any) -> dict[str, Any]:
+    """One level's stored values. None is unset, "" is an explicit none."""
+
+    if configuration is None:
+        configuration = {}
+    if not isinstance(configuration, dict):
+        raise ValueError("Honcho returned a malformed configuration.")
+    values = {"shared": configuration.get("custom_instructions")}
+    for module in INSTRUCTION_MODULES:
+        section = configuration.get(module)
+        values[module] = section.get("custom_instructions") if isinstance(section, dict) else None
+    return values
+
+
+def _instruction(text: str | None, source: str | None) -> dict[str, Any]:
+    cleaned = (text or "").strip()
+    return {
+        "text": cleaned[:MAX_INSTRUCTION_CHARS] or None,
+        "text_truncated": len(cleaned) > MAX_INSTRUCTION_CHARS,
+        "source": source,
+        # A level set "" on purpose: no instructions, and no fallback.
+        "off": source is not None and not cleaned,
+    }
+
+
+def _resolve_instruction(levels: list[tuple[str, dict[str, Any]]], module: str) -> dict[str, Any]:
+    """Mirror Honcho 3.3's resolve_custom_instructions().
+
+    The most specific level that sets a value wins. Within a level the
+    module's own value beats the shared one. Non-strings are ignored, as
+    Honcho does.
+    """
+
+    for level_name, level in levels:
+        value, source = level.get(module), f"{level_name}.{module}"
+        if value is None and module != "peer_card":
+            value, source = level.get("shared"), f"{level_name}.shared"
+        if isinstance(value, str):
+            return _instruction(value, source)
+    return _instruction(None, None)
+
+
+def _exact_configuration(client: Any, path: str, resource_id: str) -> Any:
+    items = _raw_list_page(client, path, {"id": resource_id})["items"]
+    if len(items) != 1 or not isinstance(items[0], dict) or items[0].get("id") != resource_id:
+        raise RuntimeError("Honcho did not return exactly the requested record.")
+    return items[0].get("configuration")
+
+
+def _collect_instructions(request: InstructionsRequest, **factories: Any) -> dict[str, Any]:
+    result, _config, client, current_session = _prepare_read(
+        request,
+        config_factory=factories.get("config_factory"),
+        client_factory=factories.get("client_factory"),
+        session_metadata_loader=factories.get("session_metadata_loader"),
+    )
+    result.update(
+        capabilities={"instructions": False},
+        reason=None,
+        server_version=None,
+        configured=False,
+        shared=None,
+        agents=[],
+        across_sessions=None,
+    )
+    if current_session is None:
+        return result
+
+    version = _server_version(client)
+    result["server_version"] = ".".join(map(str, version)) if version else None
+    # Older servers store these keys without using them, so showing them would
+    # describe instructions no agent follows.
+    if version is None:
+        result["reason"] = "Couldn't confirm this Honcho server's version."
+        return result
+    if version < INSTRUCTIONS_MIN_SERVER:
+        result["reason"] = f"Custom instructions need Honcho 3.3.0 or later. This server runs {result['server_version']}."
+        return result
+    result["capabilities"]["instructions"] = True
+
+    levels: dict[str, dict[str, Any]] = {}
+    for level, read in (
+        ("session", lambda: _exact_configuration(client, _sessions_list_path(client), result["session_id"])),
+        ("workspace", lambda: _exact_configuration(client, WORKSPACES_LIST_PATH, result["workspace_id"])),
+    ):
+        try:
+            levels[level] = _instruction_values(read())
+        except Exception as exc:
+            result["errors"].append({"scope": f"instructions.{level}", "message": _safe_error(exc)})
+    if len(levels) != 2:
+        # A missing level could hide the value that wins. Report what failed
+        # rather than a resolution that may be wrong.
+        result.update(ok=False, state="unavailable")
+        return result
+
+    ordered = [("session", levels["session"]), ("workspace", levels["workspace"])]
+    result["configured"] = any(isinstance(value, str) for level in levels.values() for value in level.values())
+    shared = next(((name, level["shared"]) for name, level in ordered if isinstance(level["shared"], str)), None)
+    result["shared"] = _instruction(shared[1], f"{shared[0]}.shared") if shared else _instruction(None, None)
+    result["agents"] = [{"module": module, **_resolve_instruction(ordered, module)} for module in INSTRUCTION_MODULES]
+    # Workspace-wide questions have no session, so Honcho resolves them from
+    # the workspace level only.
+    result["across_sessions"] = {"module": "dialectic", **_resolve_instruction([ordered[1]], "dialectic")}
+    return result
+
+
 def _collect_snapshot(
     request: SnapshotRequest,
     *,
@@ -2019,7 +2254,7 @@ def _collect_snapshot(
 
     # Decode inside each guarded read too. A malformed metric must not discard
     # all the independently successful reads.
-    result["totals"]["sessions"] = read("sessions", lambda: client.sessions(page=1, size=1).total)
+    result["totals"]["sessions"] = read("sessions", lambda: _sessions_total(client))
     result["totals"]["peers"] = read("peers", lambda: client.peers(page=1, size=1).total)
     result["queue"] = read("queue", lambda: _queue_payload(client.queue_status()))
 
@@ -2269,6 +2504,13 @@ async def conclusion_detail(request: ConclusionDetailRequest, profile: str | Non
 @router.post("/conclusion-search")
 async def conclusion_search(request: ConclusionSearchRequest, profile: str | None = None) -> dict:
     return await _run_collector(request, _collect_conclusion_search, profile)
+
+
+@router.post("/instructions")
+async def instructions(request: InstructionsRequest, profile: str | None = None) -> dict[str, Any]:
+    """Return the custom instructions Honcho 3.3+ applies to the focused session."""
+
+    return await _run_collector(request, _collect_instructions, profile)
 
 
 @router.post("/activity")

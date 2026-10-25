@@ -29,6 +29,8 @@ self-hosted Honcho without duplicating authentication.
    Resolver failures are not retried against another provider source.
 6. Before a scoped read, the adapter lists workspaces and verifies the
    configured workspace exists. It does not use an SDK get-or-create path.
+   If the installed SDK cannot parse that list (see "Honcho 3.3 configuration
+   and older SDKs" below), it reads the same list endpoint as JSON.
 7. The backend reads the focused stored session's title provenance and working
    directory from that profile's state database when available.
 8. Hermes's `resolve_session_name()` chooses the Honcho session, preserving
@@ -199,7 +201,9 @@ and multipart dispatch use the same confirmed backend profile.
 The pane renders the same workbench and unmounts its reads while collapsed.
 Page and pane navigation use distinct content IDs. Memory lists the session's
 newest conclusions first (Honcho's own order) with search, scope, and Add fact
-in one toolbar. Selecting a conclusion opens an inspector with its premises and
+in one toolbar. Beside the list (or in disclosures on narrow surfaces) are the
+stored session summary, the peer card, and on Honcho 3.3+ the custom
+instructions in effect. Ask names the instructions its answer follows. Selecting a conclusion opens an inspector with its premises and
 derived conclusions: beside the list on wide surfaces, in place of it in
 narrow ones. Messages holds saved messages and message search. Status holds
 connection, mapping, configuration, and background-reasoning queues.
@@ -230,7 +234,8 @@ fields used by `/snapshot`.
 | `/snapshot` | Connection, config, mapping, counts, peers, and queues | One summary object; polled no faster than 10 seconds |
 | `/messages` | Saved messages for the resolved session | Page 1+, size 1 to 100; route/focus/manual refresh |
 | `/conclusions` | Observer-to-user conclusions with provenance | Current or all scope; page 1+, size 1 to 100 |
-| `/context` | Session summary, representation, peer context, and card | Token budget 256 to 32,000; no polling |
+| `/context` | Session summary, representation, peer context, and card, plus both stored summaries regardless of budget | Token budget 256 to 32,000; no polling |
+| `/instructions` | Custom instructions in effect for the session, resolved as Honcho 3.3 resolves them | Server 3.3.0+ only, from its OpenAPI version; session and workspace levels; text bounded to 8,000 characters; no polling |
 | `/search` | Session, peer, workspace, or verified existing Honcho-scope search | Submitted query only; length 1 to 2,000; limit 1 to 100 |
 | `/scopes` | Existing visibility scopes (SDK 2.4+, server 3.1+); never get-or-create | Page 1+, size 1 to 100; capability-gated and no polling |
 | `/activity` | Workspace and session queue status plus SDK capabilities | Aggregate-only where required; polled no faster than 10 seconds |
@@ -313,7 +318,7 @@ remote backend. It uses signature-based capability checks for APIs that differ
 between Honcho versions and reports unavailable detail honestly.
 
 The current automated matrix runs against the real Python SDK 2.2.0, 2.4.0,
-2.5.0, and 2.5.1. First-class scopes require SDK 2.4+ and server 3.1+. Scope discovery
+2.5.0, 2.5.1, 2.6.0, and 2.7.0. First-class scopes require SDK 2.4+ and server 3.1+. Scope discovery
 uses `Honcho.scopes()`. Exact search-boundary verification uses SDK 2.5's
 non-creating `get_scope(id)` after workspace verification, or paginated scope
 listing on 2.4 (at most 100 pages of 100 scopes). Exhausting that budget reports
@@ -347,6 +352,46 @@ and omits explicitly mismatched relationships or session IDs. Conclusions,
 message references, and tool-call metadata are bounded to twenty each. A bad
 evidence layer does not erase a valid answer. See
 [compatibility.md](compatibility.md) for verified coverage and feature boundaries.
+
+### Honcho 3.3 configuration and older SDKs
+
+Honcho 3.3 stores `custom_instructions` inside the `summary`, `dream` and
+`peer_card` configuration sections. honcho-ai 2.5.1 and older forbid unknown
+keys in those sections, so their `WorkspaceResponse` and `SessionResponse`
+models raise `ValidationError` on a healthy server. The Honcho memory provider
+owns the SDK in each Hermes runtime, and the plugin does not change it.
+
+Decision: keep the SDK path, and on that specific `ValidationError` read the
+same non-creating list endpoint as JSON through the client's own transport.
+The session handle comes from the SDK's `Session(id, client)` constructor, the
+one its list transform uses, which sends no request. `Honcho.session()` is
+never used because it is get-or-create. Any other error still propagates.
+The real-SDK suite replays 3.3 configurations against every SDK in the matrix
+and fails on any create call.
+
+Custom instructions are read the same model-free way, because older SDKs drop
+or reject the keys. The backend resolves them the way Honcho 3.3's
+`resolve_custom_instructions()` does: session before workspace, a module's own
+value before the shared one within a level, `""` as an explicit "none" that
+stops the fallback, and no shared fallback for `peer_card`. Workspace-wide
+questions have no session, so their answer instructions come from the
+workspace level alone. Message-level instructions are written per message and
+are not shown. The panel appears only when the server's OpenAPI metadata
+reports 3.3.0 or newer, because older servers store these keys without any
+agent reading them. If either level cannot be read, the backend reports the
+failure rather than a resolution that might be wrong.
+
+### Summaries and the context budget
+
+Honcho gives the session summary at most 40% of the budget left after the
+representation and peer card, and returns no summary when it does not fit.
+Honcho 3.3 summaries run up to 1,500 and 6,000 tokens by default, so a small
+preview budget usually has none. Hermes requests the server default when its
+`contextTokens` setting is unset. The Memory view therefore shows the stored
+summary from Honcho's summaries endpoint, choosing it as Honcho does (the long
+summary when it is longer). The Context tab starts at Hermes's cap, or the
+largest preview when there is none, and says when a stored summary exists but
+does not fit the chosen budget.
 
 ## File-size semantics
 

@@ -20,16 +20,21 @@ reachable and whether background reasoning is still running.
 
 - **Memory**: the session's conclusions, newest first, with semantic search and
   a switch between this session and all sessions. Select a conclusion to see its
-  premises, what was derived from it, and where it was recorded.
+  premises, what was derived from it, and where it was recorded. Beside them are
+  the stored session summary, the peer card, and on Honcho 3.3 or newer, the
+  custom instructions Honcho follows for this session.
 - **Ask**: asks Honcho a question about the user, scoped to this session or all
   sessions, at the reasoning effort you choose. On supported servers it lists the
   records Honcho read. Reading a record is not proof that it supports the answer.
+  On Honcho 3.3 or newer it also names the custom instructions the answer follows.
 - **Messages**: saved messages for the session, grouped by day and rendered as
   they appear in chat, plus Honcho search across the session, the user, the
   whole workspace, or a named Honcho scope.
 - **Context**: what Honcho would supply right now at a token budget you pick:
   the session summary, what Honcho knows in this session and across sessions,
-  the peer card, and the recent messages. This is a fresh build, not a record of
+  the peer card, and the recent messages. The budget starts at the cap Hermes
+  uses, or at the largest preview when Hermes sets none. If the stored summary
+  doesn't fit the budget, it says so. This is a fresh build, not a record of
   what an earlier reply received.
 - **Status**: the connection, profile, Honcho session, mapping, configuration,
   and background-reasoning queues for this chat.
@@ -75,10 +80,14 @@ is installed on the remote profile. See [Windows and SSH testing](docs/windows-s
   hermes memory setup honcho
   ```
 
+- A Honcho 3 server. Read-only live checks have passed against 3.2.0, 3.3.0
+  and 3.4.1.
 - The Python `honcho-ai` SDK that the provider installs. The plugin is tested
-  with 2.2.0, 2.4.0, 2.5.0, and 2.5.1. Premises, derived conclusions, and the
-  records list in Ask need SDK 2.5 and a Honcho 3.2 or newer server. Features
-  the selected server does not support are shown as unavailable, not as empty.
+  with 2.2.0, 2.4.0, 2.5.0, 2.5.1, 2.6.0, and 2.7.0. Premises, derived
+  conclusions, and the records list in Ask need SDK 2.5 and a Honcho 3.2 or
+  newer server. Custom instructions need a Honcho 3.3 or newer server and work
+  with every tested SDK. Features the selected server does not support are
+  shown as unavailable, not as empty.
 
 ## Install
 
@@ -118,6 +127,9 @@ Restart Hermes after installing so each profile's backend loads the plugin. If
   Uploads to those fail with an error instead of going anywhere else.
 - Confirmation tickets live in the backend process for two minutes. Restarting
   Hermes in between means confirming again.
+- Honcho 3.4's named-scope API keys are not supported. Honcho rejects them on
+  the workspace list the plugin reads first, and on the session context options
+  it uses.
 - Exact per-reply recall, service-wide queue metrics, and fleet administration
   are out of scope.
 

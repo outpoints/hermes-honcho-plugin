@@ -1,5 +1,62 @@
 # Honcho compatibility verification
 
+## 0.5.0: Honcho 3.3.0 through 3.4.1, SDK 2.6.0 and 2.7.0
+
+### Honcho 3.4.0 and 3.4.1
+
+The parsed OpenAPI documents for 3.3.0 and 3.4.1 differ only in a required
+`uid` on `Workspace`, `Session` and `Peer`, and a `scope_id` parameter on
+`POST /v3/keys`. No path, request body or configuration schema changed, and
+`resolve_custom_instructions()` is unchanged, so the plugin's resolution
+still mirrors the server.
+
+| Honcho change | Plugin impact |
+| --- | --- |
+| `uid` on workspaces, peers and sessions (#1394) | None. SDK 2.2.0 to 2.6.0 ignore the field and 2.7.0 stores it. The plugin addresses records by `id`, which is unchanged. |
+| Named-scope API keys (#1341) | Not supported. Honcho rejects them on the workspace list the plugin reads first, and on the `peer_perspective` and `limit_to_session` context options. Hermes's Honcho provider has no scoped-key support either. |
+| Filter wildcards inside `AND`/`OR`/`NOT` (#1433) | None. The plugin sends only flat `id` and `session_id` filters, and a top-level `{}` still matches every row. |
+| No retries for rejected LLM requests, 422 for failed `response_format` (#1435, #1379) | None. Ask sends no `response_format` and the plugin never retries it. |
+| Dreamer working memory, creation CloudEvents (#1378, #1360) | None. Both are server-side and off by default. |
+| Queue indexes and `deletion_generation` migration (#1409) | Server deployment only. |
+
+SDK 2.7.0 adds `uid` and fixes the async client across event loops. The plugin
+uses the synchronous client.
+
+### Honcho 3.3.0 and SDK 2.6.0
+
+- **Older SDKs and 3.3 settings.** honcho-ai 2.5.1 and older reject
+  `custom_instructions` inside `summary`, `dream` and `peer_card`. A workspace
+  with one of those blocked every view in its profile, and a session with one
+  blocked that session. Workspace and session lookups now fall back to the same
+  list endpoint as JSON on that error. Top-level `custom_instructions` and the
+  new `dialectic` section never broke parsing.
+- **Stored summaries.** The Memory view showed "No summary yet" whenever the
+  summary did not fit its 2,048-token preview, which with 3.3's summary caps is
+  nearly always. It now reads the stored summaries directly. The Context tab
+  starts at Hermes's `contextTokens` cap (or 32,000 when Hermes sets none) and
+  says when a stored summary does not fit.
+- **Custom instructions.** New `/instructions` endpoint and UI, shown only on
+  servers that report 3.3.0 or newer.
+- **SDK 2.6.0** adds configuration types only. No request changed.
+
+### Verification
+
+- Python suite (113 tests) passes under real `honcho-ai` 2.2.0, 2.4.0, 2.5.0,
+  2.5.1, 2.6.0 and 2.7.0, each loaded as an isolated overlay through the
+  managed Hermes launcher. Each run printed its version. Fixtures use 3.4
+  records with `uid`, and one test repeats every read with 3.3 records without
+  it. The 3.3 configuration test fails against the 0.4.1 backend with
+  `2 validation errors for WorkspaceResponse`. JavaScript suite: 85 tests.
+- The synthetic screenshot harness ran every flow with no accessibility
+  violations, browser errors or outside requests, including the new
+  instructions, summary-budget and pre-3.3 states.
+- A fresh process ran every read collector (snapshot, messages, conclusions,
+  context, search, activity, instructions, scopes and capabilities) against a
+  live 3.4.1 server, read-only. All returned `connected` with no errors. The
+  same collectors had passed against 3.3.0 earlier. That server has no custom
+  instructions set, so the fallback and resolution are verified offline with
+  the real SDKs, not live.
+
 ## 0.4.1 (2026-10-08)
 
 - No backend change. The Python suite (94 tests) passes with the installed
@@ -76,6 +133,8 @@ server responses.
 | 2.4.0 | Supported | Paginated non-creating lookup | Null when absent in SDK |
 | 2.5.0 | Supported | Exact non-creating `get_scope` | Parent IDs and derivation counts |
 | 2.5.1 | Supported | Exact non-creating `get_scope` | Parent IDs and derivation counts |
+| 2.6.0 | Supported | Exact non-creating `get_scope` | Parent IDs and derivation counts |
+| 2.7.0 | Supported | Exact non-creating `get_scope` | Parent IDs and derivation counts |
 
 The new workbench suite runs through each real SDK's HTTP layer:
 

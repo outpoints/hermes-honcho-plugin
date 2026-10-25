@@ -123,6 +123,30 @@ const copyText = [
   ['PEER CONTEXT', peerContext],
   ['PEER CARD', peerCard.join('\n')],
 ].map(([label, value]) => `[${label}]\n${value.trim()}`).join('\n\n')
+// Honcho 3.3 custom instructions, already resolved the way the backend does:
+// session settings before workspace settings, an agent's own text before the
+// shared text, and peer card never using the shared text.
+const instruction = (module, source, text) => ({ module, source, text, text_truncated: false, off: false })
+const sharedInstruction = 'Write about demo-user in plain English. Use kilometers, and name the route when a fact is about one route.'
+const instructions = {
+  capabilities: { instructions: true }, reason: null, server_version: '3.3.0', configured: true,
+  shared: instruction(null, 'workspace.shared', sharedInstruction),
+  agents: [
+    instruction('reasoning', 'workspace.shared', sharedInstruction),
+    instruction('summary', 'workspace.summary', 'Keep summaries to decisions and the next draft’s priorities. Skip greetings and small talk.'),
+    instruction('dialectic', 'session.dialectic', 'Answer in two or three sentences, then name the conclusions you relied on.'),
+    instruction('dream', 'workspace.shared', sharedInstruction),
+    instruction('peer_card', 'workspace.peer_card', 'Keep only facts that matter for planning walks: units, format, and the group’s needs.'),
+  ],
+  across_sessions: instruction('dialectic', 'workspace.shared', sharedInstruction),
+}
+// Both stored summaries. Honcho gives a summary at most 40% of the budget left
+// after the representation and peer card, so small previews return none.
+const storedSummaries = {
+  short: { content: summary, content_truncated: false, token_count: 900, created_at: at(15, '10:28') },
+  long: null,
+}
+
 const answer = `Use kilometers. Keep each route overview short, put detailed observations in their own section, and end the route with a short packing checklist.
 
 ### What memory says
@@ -135,11 +159,12 @@ const answer = `Use kilometers. Keep each route overview short, put detailed obs
 The ridge traverse is still deferred to a later section.`
 
 export const fixtures = {
-  '/snapshot': { ...base, latency_ms: 38, config: { workspace_id: 'demo-workspace', endpoint: 'https://honcho.example.com', user_peer: 'demo-user', ai_peer: 'demo-assistant', session_strategy: 'per-repo', recall_mode: 'hybrid', write_frequency: 'async', save_messages: true }, chat: { found: true, hermes_session_id: 'demo-conversation', honcho_session_id: sessionId, messages: messages.length, peers: ['demo-user', 'demo-assistant'], queue: sessionQueue, mapping_source: 'repository', cwd: '/demo/field-guide', latest_message_at: messages.at(-1).created_at, latest_peer_id: 'demo-assistant' }, queue: workspaceQueue, totals: { conclusions: conclusions.length } },
+  '/snapshot': { ...base, latency_ms: 38, config: { workspace_id: 'demo-workspace', endpoint: 'https://honcho.example.com', user_peer: 'demo-user', ai_peer: 'demo-assistant', session_strategy: 'per-repo', recall_mode: 'hybrid', write_frequency: 'async', save_messages: true, context_tokens: null }, chat: { found: true, hermes_session_id: 'demo-conversation', honcho_session_id: sessionId, messages: messages.length, peers: ['demo-user', 'demo-assistant'], queue: sessionQueue, mapping_source: 'repository', cwd: '/demo/field-guide', latest_message_at: messages.at(-1).created_at, latest_peer_id: 'demo-assistant' }, queue: workspaceQueue, totals: { conclusions: conclusions.length } },
   '/messages': { ...base, items: [...messages].reverse(), total: messages.length, page: 1, pages: 1 },
-  '/context': { ...base, session: { summary, messages, token_count: null }, session_representation: representation, peer_context: peerContext, peer_card: peerCard, layers: { peer_card: true, conclusions: true, summaries: true, messages: true }, copy_text: copyText, preview: copyText, character_count: copyText.length, token_estimate: Math.ceil(copyText.length / 4), token_budget: 2048, scope_explanation: 'Session layers come from this demonstration session. The peer card covers the whole workspace.' },
+  '/context': { ...base, session: { summary, messages, token_count: null }, stored_summaries: storedSummaries, session_representation: representation, peer_context: peerContext, peer_card: peerCard, layers: { peer_card: true, conclusions: true, summaries: true, messages: true }, copy_text: copyText, preview: copyText, character_count: copyText.length, token_estimate: Math.ceil(copyText.length / 4), token_budget: 2048, scope_explanation: 'Session layers come from this demonstration session. The peer card covers the whole workspace.' },
   '/scopes': { ...base, items: [], capabilities: { scope_search: false } },
   '/activity': { ...base, session_queue: sessionQueue, workspace_queue: workspaceQueue, sdk_version: '2.5.1', capability_note: 'Detailed reasoning traces are not exposed by this SDK.' },
+  '/instructions': { ...base, session_id: sessionId, workspace_id: 'demo-workspace', ...instructions },
 }
 
 let ticketSequence = 0
@@ -166,6 +191,11 @@ export async function fixtureTransport(path, options = {}) {
   if (endpoint === '/search') {
     const query = (body.query || '').toLowerCase().replace(/s$/, '')
     return { ...base, items: messages.filter(message => message.content.toLowerCase().includes(query)).map((message, index) => ({ ...message, rank: index + 1 })), query: body.query }
+  }
+  if (endpoint === '/context' && (body.token_budget || 0) < 2250) {
+    // 900 / 0.4: below this the stored summary can't fit, as on a real server.
+    const context = structuredClone(fixtures['/context'])
+    return { ...context, token_budget: body.token_budget, session: { ...context.session, summary: '', messages: context.session.messages.slice(-2) }, layers: { ...context.layers, summaries: false } }
   }
   if (endpoint === '/ask') return { ...base, query: body.query, scope: body.scope, answer, evidence: body.include_evidence ? { conclusions: ['demo-conclusion-2', 'demo-conclusion-1', 'demo-conclusion-4'].map(id => conclusions.find(item => item.id === id)), messages: [messages[2]].map(({ id, session_id, peer_id, created_at }) => ({ id, session_id, peer_id, created_at })), tool_calls: [], reasoning_trace_id: 'demo-trace' } : null }
   if (endpoint === '/correction-ticket') {

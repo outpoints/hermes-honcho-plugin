@@ -69,6 +69,10 @@ const SECTIONS = [
   { id: 'status', label: 'Status' }
 ]
 const CONTEXT_BUDGETS = [1024, 2048, 4096, 8192, 16384, 32000]
+const MAX_CONTEXT_BUDGET = 32000
+// Honcho gives the session summary at most this share of the budget left after
+// the representation and peer card, and returns no summary when it can't fit.
+const SUMMARY_BUDGET_SHARE = 0.4
 const $activeTab = atom('memory')
 const $selection = atom(null)
 const $uploadOrigin = atom(null)
@@ -209,6 +213,31 @@ function contextMessageDetail(session) {
   return session?.token_count === null || session?.token_count === undefined
     ? `${count} · token total not reported`
     : `${count} · ${plural(session.token_count, 'server-reported token')}`
+}
+
+// The stored summary Honcho picks when the budget holds it: the long one when
+// it is longer than the short one, otherwise the short one.
+function storedSummary(stored) {
+  const short = stored?.short?.content ? stored.short : null
+  const long = stored?.long?.content ? stored.long : null
+  if (long && (!short || (long.token_count ?? 0) > (short.token_count ?? 0))) return long
+  return short || long
+}
+
+// Smallest budget that could hold a stored summary. A lower bound: the
+// representation and peer card come out of the same budget first.
+function summaryBudgetFloor(stored) {
+  const counts = [stored?.short, stored?.long]
+    .map(item => (item?.content ? Number(item.token_count) : NaN))
+    .filter(value => Number.isFinite(value) && value > 0)
+  return counts.length ? Math.ceil(Math.min(...counts) / SUMMARY_BUDGET_SHARE) : null
+}
+
+// Hermes's own context cap, kept inside the preview's range. Without a cap
+// Hermes gets Honcho's server default, so the largest preview is closest.
+function contextBudgetFor(contextTokens) {
+  const value = Number(contextTokens)
+  return Number.isInteger(value) && value > 0 ? Math.min(MAX_CONTEXT_BUDGET, Math.max(256, value)) : MAX_CONTEXT_BUDGET
 }
 
 // ── Honcho text formats ─────────────────────────────────────────────────────
@@ -1125,9 +1154,13 @@ function correctionTarget(data) {
   }
 }
 
-function SessionContext({ enabled = true }) {
+function SessionContext({ enabled = true, extra = null }) {
   const context = useHonchoEndpoint('/context', [2048], { token_budget: 2048 }, { staleTime: 60_000, enabled })
   const data = context.data
+  // The stored summary, not the budgeted preview: a 2,048-token preview has
+  // no room for most summaries, which is not the same as having none.
+  const stored = storedSummary(data?.stored_summaries)
+  const summary = stored?.content || data?.session?.summary
   return jsx(QueryState, {
     query: context,
     children: jsxs('div', {
@@ -1136,10 +1169,14 @@ function SessionContext({ enabled = true }) {
         jsxs('section', {
           className: 'space-y-2',
           children: [
-            jsx(RegionHeading, { children: 'Session summary' }),
-            data?.session?.summary
-              ? jsx(Markdown, { source: data.session.summary })
-              : jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'No summary yet. Honcho writes one after enough messages.' })
+            jsx(RegionHeading, { meta: stored?.created_at ? `Updated ${formatDate(stored.created_at)}` : null, children: 'Session summary' }),
+            summary
+              ? jsx(Markdown, { source: summary })
+              : jsx('p', {
+                  className: 'text-xs leading-5 text-(--ui-text-secondary)',
+                  style: PROSE,
+                  children: data?.stored_summaries ? 'No summary yet. Honcho writes one after enough messages.' : 'Honcho didn’t return a summary.'
+                })
           ]
         }),
         jsxs('section', {
@@ -1149,6 +1186,7 @@ function SessionContext({ enabled = true }) {
             jsx(PeerCardFacts, { facts: data?.peer_card })
           ]
         }),
+        extra,
         jsx(Button, { variant: 'link', size: 'inline', onClick: () => $activeTab.set('context'), children: 'Open the full context' })
       ]
     })
@@ -1179,6 +1217,166 @@ function Disclosure({ label, meta, indent = true, children }) {
 
 function SummaryDisclosure() {
   return jsx(Disclosure, { label: 'Session summary and peer card', children: () => jsx(SessionContext, {}) })
+}
+
+// ── Custom instructions ─────────────────────────────────────────────────────
+// Honcho 3.3 agents that follow custom instructions, in Honcho's order.
+// "Answers" covers Ask memory and Hermes's own recall questions.
+const INSTRUCTION_AGENTS = [
+  ['reasoning', 'Conclusions'],
+  ['summary', 'Summaries'],
+  ['dialectic', 'Answers'],
+  ['dream', 'Dreams'],
+  ['peer_card', 'Peer card']
+]
+const INSTRUCTION_FOLD = '7.5rem'
+
+// One cache entry for every surface. The backend shows nothing on servers
+// older than 3.3.0, where these keys exist but no agent reads them.
+function useInstructions() {
+  return useHonchoEndpoint('/instructions', [], {}, { staleTime: 60_000 })
+}
+
+function instructionsReady(query) {
+  return Boolean(query.data?.capabilities?.instructions)
+}
+
+// Distinct settings: the shared text plus each agent that sets its own.
+function instructionsMeta(data) {
+  if (!data?.configured) return 'None set'
+  const shared = data.shared?.source
+  const own = (data.agents || []).filter(entry => entry.source && entry.source !== shared).length
+  return `${number(own + (shared ? 1 : 0))} set`
+}
+
+function SourceTag({ source }) {
+  return jsx('code', { className: 'font-mono text-[11px] text-(--ui-text-tertiary)', children: source })
+}
+
+function InstructionText({ value, truncated = false }) {
+  const [open, setOpen] = useState(false)
+  const [overflowing, setOverflowing] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    const element = ref.current
+    if (open || !element) return undefined
+    const update = () => setOverflowing(element.scrollHeight > element.clientHeight + 1)
+    update()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [value, open])
+  return jsxs('div', {
+    className: 'min-w-0 space-y-1',
+    children: [
+      jsx('p', {
+        ref,
+        className: 'whitespace-pre-wrap text-xs leading-5 text-foreground',
+        style: { ...PROSE, ...(open ? {} : { maxHeight: INSTRUCTION_FOLD, overflow: 'hidden', ...(overflowing ? { WebkitMaskImage: FOLD_MASK, maskImage: FOLD_MASK } : {}) }) },
+        children: value
+      }),
+      truncated ? jsx('p', { className: 'text-[11px] text-(--ui-text-tertiary)', children: 'Shortened for display.' }) : null,
+      overflowing || open ? jsx(InlineToggle, { open, onClick: () => setOpen(current => !current), children: open ? 'Fold' : 'Show all' }) : null
+    ]
+  })
+}
+
+function InstructionRow({ label, entry, shared }) {
+  const layout = useLayout()
+  const usesShared = Boolean(entry?.source && !entry.off && shared?.source === entry.source)
+  const status = !entry?.source ? 'Not set' : entry.off ? 'Off' : usesShared ? 'Uses the shared text' : null
+  return jsxs('li', {
+    className: 'grid min-w-0 py-1.5',
+    style: { gridTemplateColumns: layout === 'narrow' ? '6.5rem minmax(0, 1fr)' : '8.5rem minmax(0, 1fr)', columnGap: 12, alignItems: 'baseline' },
+    children: [
+      jsx('span', { className: 'text-xs leading-5 text-(--ui-text-secondary)', children: label }),
+      jsxs('div', {
+        className: 'min-w-0 space-y-1',
+        children: [
+          entry?.text && !usesShared ? jsx(InstructionText, { value: entry.text, truncated: entry.text_truncated }) : null,
+          jsxs('div', {
+            className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5',
+            children: [
+              status ? jsx('span', { className: 'text-(--ui-text-secondary)', children: status }) : null,
+              entry?.source ? jsx(SourceTag, { source: entry.source }) : null
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function InstructionsList({ data }) {
+  if (data.errors?.length) return jsx(Diagnostics, { errors: data.errors })
+  if (!data.configured) {
+    return jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'None set. Honcho uses its built-in prompts.' })
+  }
+  const byModule = Object.fromEntries((data.agents || []).map(entry => [entry.module, entry]))
+  return jsxs('div', {
+    className: 'min-w-0 space-y-2',
+    children: [
+      jsx('ul', {
+        ...SELECTABLE,
+        'aria-label': 'Custom instructions by agent',
+        className: 'min-w-0',
+        children: [
+          jsx(InstructionRow, { label: 'Shared', entry: data.shared }, 'shared'),
+          ...INSTRUCTION_AGENTS.map(([module, label]) => jsx(InstructionRow, { label, entry: byModule[module], shared: data.shared }, module))
+        ]
+      }),
+      jsx('p', {
+        className: 'text-xs leading-5 text-(--ui-text-secondary)',
+        style: PROSE,
+        children: 'Session settings win over workspace settings. Instructions attached to a single message win over both and aren’t shown here. Peer card instructions are added to the dream instructions.'
+      })
+    ]
+  })
+}
+
+function InstructionsRegion() {
+  const query = useInstructions()
+  if (!instructionsReady(query)) return null
+  return jsxs('section', {
+    className: 'space-y-2',
+    children: [
+      jsx(RegionHeading, { meta: instructionsMeta(query.data), children: 'Custom instructions' }),
+      jsx(InstructionsList, { data: query.data })
+    ]
+  })
+}
+
+function InstructionsDisclosure() {
+  const query = useInstructions()
+  if (!instructionsReady(query)) return null
+  return jsx(Disclosure, { label: 'Custom instructions', meta: instructionsMeta(query.data), children: () => jsx(InstructionsList, { data: query.data }) })
+}
+
+// Under the Ask composer: the instructions this question's answer follows.
+// Questions across sessions have no session, so Honcho reads only the
+// workspace's setting for them.
+function AnswerInstructions({ scope }) {
+  const query = useInstructions()
+  const [open, setOpen] = useState(false)
+  if (!instructionsReady(query) || query.data.errors?.length) return null
+  const entry = scope === 'session' ? query.data.agents?.find(item => item.module === 'dialectic') : query.data.across_sessions
+  if (!entry?.source) return null
+  const where = scope === 'session' ? 'in this session' : 'across sessions'
+  return jsxs('div', {
+    className: 'min-w-0 space-y-1',
+    children: [
+      jsxs('div', {
+        className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 text-(--ui-text-secondary)',
+        children: [
+          jsx('span', { children: entry.off ? `Custom instructions are off for answers ${where}.` : `Answers ${where} follow custom instructions.` }),
+          jsx(SourceTag, { source: entry.source }),
+          entry.off ? null : jsx(InlineToggle, { open, onClick: () => setOpen(current => !current), children: open ? 'Hide' : 'Show' })
+        ]
+      }),
+      open && !entry.off ? jsx(InstructionText, { value: entry.text, truncated: entry.text_truncated }) : null
+    ]
+  })
 }
 
 function ConclusionInspector({ id, fallback, flags, onSelect, onClose, onCorrect, backLabel }) {
@@ -1391,7 +1589,7 @@ function MemorySection() {
             className: 'space-y-4',
             children: [
               jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', children: 'Select a conclusion to see where it came from or correct it.' }),
-              jsx(SessionContext, {})
+              jsx(SessionContext, { extra: jsx(InstructionsRegion, {}) })
             ]
           })
         }),
@@ -1402,7 +1600,14 @@ function MemorySection() {
 
   return jsxs('div', {
     className: 'min-w-0 space-y-4',
-    children: inspector ? [inspector, dialog] : [jsx('div', { children: toolbar }, 'toolbar'), jsx(SummaryDisclosure, {}, 'summary'), jsx('div', { children: results }, 'results'), dialog]
+    children: inspector
+      ? [inspector, dialog]
+      : [
+          jsx('div', { children: toolbar }, 'toolbar'),
+          jsxs('div', { className: 'min-w-0 space-y-1', children: [jsx(SummaryDisclosure, {}, 'summary'), jsx(InstructionsDisclosure, {}, 'instructions')] }, 'context'),
+          jsx('div', { children: results }, 'results'),
+          dialog
+        ]
   })
 }
 
@@ -1656,6 +1861,7 @@ function AskSection() {
         : null
   const lead = [
     composer,
+    jsx(AnswerInstructions, { scope }, 'instructions'),
     jsx(CapabilityNote, { query: capability, feature: 'ask' }, 'capability'),
     mutation.error ? jsx(StateLine, { tone: 'warn', title: 'No answer', children: mutation.error.message }, 'error') : null,
     answer
@@ -2142,10 +2348,19 @@ function ContextSection() {
   const layout = useLayout()
   const wide = layout === 'wide'
   const snapshot = useHonchoSnapshot()
-  const [budget, setBudget] = useState(2048)
+  // Start from what Hermes requests for this profile, so the preview matches
+  // the context Hermes receives as closely as the preview's range allows.
+  const contextTokens = snapshot.data?.config?.context_tokens
+  const capped = Number.isInteger(contextTokens) && contextTokens > 0
+  const hermesBudget = contextBudgetFor(contextTokens)
+  const budgets = [...new Set([...CONTEXT_BUDGETS, hermesBudget])].sort((a, b) => a - b)
+  const [chosen, setChosen] = useState(null)
+  const budget = chosen ?? hermesBudget
   const query = useHonchoEndpoint('/context', [budget], { token_budget: budget })
   const data = query.data
   const session = data?.session
+  const summaryFloor = session?.summary ? null : summaryBudgetFloor(data?.stored_summaries)
+  const largerBudget = summaryFloor ? budgets.find(value => value > summaryFloor && value > budget) : null
   const empty = jsx('p', { className: 'text-xs text-(--ui-text-secondary)', children: 'Nothing yet.' })
   const sessionRepresentation = data?.session_representation || session?.representation || ''
   const observations = parseRepresentation(sessionRepresentation)
@@ -2160,7 +2375,21 @@ function ContextSection() {
     ? [
         jsx(ContextBlock, {
           title: 'Session summary',
-          children: session?.summary ? jsx(Markdown, { source: session.summary }) : empty
+          children: session?.summary
+            ? jsx(Markdown, { source: session.summary })
+            : summaryFloor
+              ? jsxs('div', {
+                  className: 'space-y-2',
+                  children: [
+                    jsx('p', {
+                      className: 'text-xs leading-5 text-(--ui-text-secondary)',
+                      style: PROSE,
+                      children: `Honcho has a summary, but it doesn’t fit this budget. A summary can use at most 40% of what’s left after the representation and peer card, so this one needs more than ${number(summaryFloor)} tokens.`
+                    }),
+                    largerBudget ? jsx(Button, { variant: 'link', size: 'inline', onClick: () => setChosen(largerBudget), children: `Try ${number(largerBudget)} tokens` }) : null
+                  ]
+                })
+              : empty
         }, 'summary'),
         jsx(ContextBlock, {
           title: 'What Honcho knows in this session',
@@ -2211,10 +2440,18 @@ function ContextSection() {
         children: [
           jsxs(Select, {
             value: String(budget),
-            onValueChange: value => setBudget(Number(value)),
+            onValueChange: value => setChosen(Number(value)),
             children: [
               jsx(SelectTrigger, { 'aria-label': 'Token budget', className: layout === 'narrow' ? 'w-full' : 'w-44', children: jsx(SelectValue, {}) }),
-              jsx(SelectContent, { 'data-honcho-surface': '', children: CONTEXT_BUDGETS.map(value => jsx(SelectItem, { value: String(value), children: `${number(value)} token budget` }, value)) })
+              jsx(SelectContent, {
+                'data-honcho-surface': '',
+                // Only a real Hermes cap is marked. The note below explains
+                // the uncapped default.
+                children: budgets.map(value => jsx(SelectItem, {
+                  value: String(value),
+                  children: `${number(value)} tokens${capped && value === hermesBudget ? ' · Hermes' : ''}`
+                }, value))
+              })
             ]
           }),
           jsxs(Button, { variant: 'secondary', size: 'sm', disabled: query.isFetching || query.routeMismatch, onClick: () => query.refetch(), children: [jsx(icons.RefreshCw, {}), query.isFetching ? 'Rebuilding…' : 'Rebuild'] }),
@@ -2224,7 +2461,9 @@ function ContextSection() {
       jsx('p', {
         className: 'text-xs leading-5 text-(--ui-text-secondary)',
         style: PROSE,
-        children: 'Rebuilt from Honcho just now. This is what Honcho would supply today, not a record of what an earlier reply received.'
+        children: `Rebuilt from Honcho just now. This is what Honcho would supply today, not a record of what an earlier reply received. ${capped
+          ? `Hermes asks for up to ${plural(contextTokens, 'token')} in this profile.`
+          : `Hermes sets no limit in this profile, so it gets Honcho’s server default. ${number(MAX_CONTEXT_BUDGET)} tokens is the largest preview.`}`
       }),
       jsx(QueryState, {
         query,
@@ -2236,7 +2475,7 @@ function ContextSection() {
                   'aria-label': 'Context layers',
                   className: 'flex min-w-0 flex-wrap gap-x-4 gap-y-1',
                   children: [
-                    jsx(LayerChip, { label: 'Summary', available: data.layers?.summaries, detail: session?.summary ? plural(session.summary.length, 'char') : 'none' }, 'summary'),
+                    jsx(LayerChip, { label: 'Summary', available: data.layers?.summaries, detail: session?.summary ? plural(session.summary.length, 'char') : summaryFloor ? 'doesn’t fit' : 'none' }, 'summary'),
                     jsx(LayerChip, { label: 'Representation', available: data.layers?.conclusions, detail: data.session_representation ? plural(data.session_representation.length, 'char') : 'none' }, 'representation'),
                     jsx(LayerChip, { label: 'Peer card', available: data.layers?.peer_card, detail: plural(data.peer_card?.length || 0, 'fact') }, 'card'),
                     jsx(LayerChip, { label: 'Messages', available: data.layers?.messages, detail: contextMessageDetail(session) }, 'messages'),

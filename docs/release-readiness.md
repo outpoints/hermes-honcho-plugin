@@ -1,5 +1,58 @@
 # Release verification
 
+## 0.5.0, 2026-10-25
+
+Supports Honcho 3.3.0 through 3.4.1 and Python SDK 2.6.0 and 2.7.0. See
+[compatibility.md](compatibility.md) for the change-by-change mapping.
+
+### Changes
+
+- Older SDKs no longer fail on Honcho 3.3 settings. honcho-ai 2.5.1 and older
+  reject `custom_instructions` inside `summary`, `dream` and `peer_card`, which
+  blocked every view in a profile whose workspace had one. Workspace and
+  session lookups fall back to the same non-creating list endpoint as JSON.
+- Memory shows the stored session summary. It had shown "No summary yet"
+  whenever the summary did not fit its 2,048-token preview, which with
+  Honcho 3.3's larger summaries is nearly always.
+- Context starts at the cap Hermes uses, or 32,000 tokens when Hermes sets
+  none, and says when a stored summary does not fit the chosen budget.
+- New custom instructions view for Honcho 3.3+: beside the summary in Memory,
+  as a disclosure in the pane, and as one line under Ask naming the
+  instructions the answer follows. Shown only when the server reports 3.3.0 or
+  newer. New `/instructions` endpoint.
+- Honcho 3.4 adds `uid` to workspace, session and peer records. Every tested
+  SDK accepts it, and the plugin keeps addressing records by `id`. Named-scope
+  API keys are documented as unsupported.
+
+### Verification
+
+- `./scripts/check.sh`: 85 JavaScript and 113 Python tests pass.
+- The Python suite passes under `honcho-ai` 2.2.0, 2.4.0, 2.5.0, 2.5.1, 2.6.0
+  and 2.7.0 overlays through the managed launcher. The new 3.3 configuration
+  test fails against the 0.4.1 backend. Eight deliberate breakages of the new
+  resolution, gating and summary logic were each caught by a test.
+- `scripts/check-ui-surface.mjs`: all 41 SDK imports and 8 icons exist in
+  Hermes v2026.9.21 (0.21.4) and v2026.9.24. `MessageTextContent` is still
+  absent in v2026.9.14, so `requires_hermes: ">=0.21.4"` holds. All 115
+  utility classes exist in the shipped stylesheet.
+- `scripts/screenshots.mjs` against host bf0203a794: 30 synthetic captures and
+  17 axe WCAG A/AA audits with 0 violations, 0 browser errors, 0 external
+  requests and 0 uploads. Four captures are new (instructions, instructions in
+  the pane, Ask with instructions, summary and budget).
+- `scripts/catalog-art.mjs`: the Ask and Pane plates changed. The other five
+  images are byte-identical.
+- `hermes plugins validate . --json` passes. Its one warning, about private
+  core imports used for profile scoping, comes from a newer validator rule and
+  is reported for 0.4.1 too. `hermes plugins doctor --ci .` passes.
+- Read-only live check against Honcho 3.4.1 in a fresh process: every read
+  collector returned `connected` with no errors. That server has no custom
+  instructions set, so the fallback and resolution are verified offline only.
+- Privacy: a pattern scan of every added line (checked against a positive
+  control) found nothing. `gitleaks dir .` found no leaks. No PNG carries
+  embedded metadata.
+- Not verified in a running Desktop app. Running Hermes backends keep the old
+  Python until they restart.
+
 ## 0.4.1, 2026-10-08
 
 ### Changes

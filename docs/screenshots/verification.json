@@ -1,7 +1,7 @@
 {
   "synthetic": true,
-  "host_commit": "8cb42b9ee33e2dd3e3b0f3f5797e1a599ca83251",
-  "plugin_sha256": "5f7cafd9b04eb9529837ae659f0a18a035c272780af42fc01606b25835718ebc",
+  "host_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "plugin_sha256": "097b86aad52992d74e800ddcdea9384b3f7e50f192926987296642a72b089e19",
   "captures": [
     {
       "file": "memory-dark.png",
@@ -30,6 +30,20 @@
     },
     {
       "file": "diagnostics.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "context-summary-budget.png",
+      "width": 2400,
+      "height": 1600
+    },
+    {
+      "file": "instructions.png",
+      "element": "aside"
+    },
+    {
+      "file": "ask-instructions.png",
       "width": 2400,
       "height": 1600
     },
@@ -94,6 +108,11 @@
       "height": 2200
     },
     {
+      "file": "instructions-pane.png",
+      "width": 760,
+      "height": 2200
+    },
+    {
       "file": "memory-pane-detail.png",
       "width": 760,
       "height": 2200
@@ -148,6 +167,18 @@
       "violations": []
     },
     {
+      "name": "context-summary-budget",
+      "violations": []
+    },
+    {
+      "name": "instructions",
+      "violations": []
+    },
+    {
+      "name": "ask-instructions",
+      "violations": []
+    },
+    {
       "name": "add-to-session",
       "violations": []
     },
@@ -173,6 +204,10 @@
     },
     {
       "name": "status-light",
+      "violations": []
+    },
+    {
+      "name": "instructions-pane",
       "violations": []
     },
     {
@@ -211,6 +246,9 @@
     "disconnected state",
     "pane focus handoff retains inspected tile",
     "portalled menu preserves inspection target",
-    "host sidebar navigation preserves inspection target without reading host markup"
+    "host sidebar navigation preserves inspection target without reading host markup",
+    "stored summary shown when the preview budget is too small",
+    "custom instructions on wide and pane layouts and under Ask",
+    "no instructions on servers before 3.3.0"
   ]
 }

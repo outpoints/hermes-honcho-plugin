@@ -12,7 +12,9 @@ import warnings
 from types import SimpleNamespace
 
 import httpx
+from pydantic import ValidationError
 from honcho import Honcho
+from honcho import api_types
 from honcho.conclusions import Conclusion
 from honcho.session import Session
 
@@ -33,6 +35,13 @@ class SDKCompatibilityTests(unittest.TestCase):
         self.workspace_exists = True
         self.session_exists = True
         self.upload_enabled = False
+        # Honcho 3.4 adds a required `uid` to workspace, session and peer
+        # records. Older servers omit it.
+        self.server_version = "3.4.1"
+        self.include_uid = True
+        self.workspace_config = {}
+        self.session_config = {}
+        self.summaries = {"short_summary": None, "long_summary": None}
         self.message = {
             "id": "message-fixture", "content": "Synthetic fixture content.",
             "peer_id": "human", "session_id": SESSION, "workspace_id": WORKSPACE,
@@ -75,12 +84,16 @@ class SDKCompatibilityTests(unittest.TestCase):
 
         if (request.method, path) == ("POST", "/v3/workspaces/list"):
             self.assertEqual(body, {"filters": {"id": WORKSPACE}})
-            return page([{"id": WORKSPACE, "created_at": STAMP, "metadata": {}}] if self.workspace_exists else [])
+            return page([self.record({"id": WORKSPACE, "created_at": STAMP, "metadata": {}, "configuration": self.workspace_config})] if self.workspace_exists else [])
         if (request.method, path) == ("POST", f"{ROOT}/sessions/list"):
             if body and body.get("filters"):
                 self.assertEqual(body["filters"], {"id": SESSION})
-            return page([{"id": SESSION, "workspace_id": WORKSPACE, "is_active": True, "created_at": STAMP}] if self.session_exists else [])
-        peers = [{"id": name, "workspace_id": WORKSPACE, "created_at": STAMP} for name in ("human", "agent")]
+            return page([self.record({"id": SESSION, "workspace_id": WORKSPACE, "is_active": True, "created_at": STAMP, "metadata": {}, "configuration": self.session_config})] if self.session_exists else [])
+        if (request.method, path) == ("GET", "/openapi.json"):
+            return response({"openapi": "3.1.0", "info": {"title": "Honcho API", "version": self.server_version}})
+        if (request.method, path) == ("GET", f"{SESSION_ROOT}/summaries"):
+            return response({"id": SESSION, **self.summaries})
+        peers = [self.record({"id": name, "workspace_id": WORKSPACE, "created_at": STAMP}) for name in ("human", "agent")]
         if (request.method, path) == ("POST", f"{ROOT}/peers/list") or (request.method, path) == ("GET", f"{SESSION_ROOT}/peers"):
             return page(peers)
         if (request.method, path) == ("POST", f"{SESSION_ROOT}/messages/list"):
@@ -129,6 +142,9 @@ class SDKCompatibilityTests(unittest.TestCase):
             return response({**self.message, "id": path.rsplit("/", 1)[1]})
         self.fail(f"Unexpected request, possibly a get-or-create write: {request.method} {path}")
 
+    def record(self, item):
+        return {**item, "uid": f"uid-{item['id']}"} if self.include_uid else item
+
     def collect(self, name, **kwargs):
         request_class = getattr(plugin_api, f"{name.title()}Request")
         return getattr(plugin_api, f"_collect_{name}")(
@@ -173,6 +189,132 @@ class SDKCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["session"]["messages"][0]["session_id"], SESSION)
         self.assertIsNone(result["session"]["token_count"])
         self.assertEqual(result["peer_card"], [])
+        self.assertEqual(result["stored_summaries"], {"short": None, "long": None})
+
+    def test_stored_summaries_are_read_without_the_budget(self):
+        summary = {"content": "Synthetic long summary.", "message_id": "message-fixture", "summary_type": "long", "created_at": STAMP, "token_count": 6000}
+        self.summaries = {"short_summary": {**summary, "content": "Synthetic short summary.", "summary_type": "short", "token_count": 1500}, "long_summary": summary}
+        result = self.collect("context")
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["stored_summaries"]["long"]["content"], "Synthetic long summary.")
+        self.assertEqual(result["stored_summaries"]["long"]["token_count"], 6000)
+        self.assertEqual(result["stored_summaries"]["short"]["token_count"], 1500)
+
+    # Honcho 3.3 configurations: the shared text, per-agent text, a dialectic
+    # section, and explicit "" values. honcho-ai 2.5.1 and older reject the
+    # nested summary/dream/peer_card keys inside their response models.
+    WORKSPACE_33 = {
+        "custom_instructions": "Workspace shared.",
+        "summary": {"enabled": True, "custom_instructions": "Workspace summary."},
+        "peer_card": {"use": True, "custom_instructions": "Workspace card."},
+        "dialectic": {"custom_instructions": "Workspace answers."},
+    }
+    SESSION_33 = {
+        "dream": {"enabled": True, "custom_instructions": "Session dream."},
+        "dialectic": {"custom_instructions": ""},
+    }
+
+    def test_reads_survive_honcho_33_instruction_configuration(self):
+        self.workspace_config, self.session_config = self.WORKSPACE_33, self.SESSION_33
+        if not hasattr(api_types, "DialecticConfiguration"):
+            # Prove this SDK really rejects the payload, so the fallback runs.
+            # A throwaway client marked verified, as the plugin's preflight
+            # does, so the SDK skips its get-or-create workspace call.
+            probe = Honcho(base_url="http://honcho.invalid", environment="local", api_key="fixture-only", workspace_id=WORKSPACE, http_client=self.http, max_retries=0)
+            probe._workspace_ensured = True
+            with self.assertRaises(ValidationError):
+                probe.sessions(filters={"id": SESSION}, page=1, size=1)
+            with self.assertRaises(ValidationError):
+                probe.workspaces(filters={"id": WORKSPACE}, page=1, size=1)
+            self.calls.clear()
+        snapshot = self.collect("snapshot")
+        self.assertEqual(snapshot["errors"], [])
+        self.assertEqual(snapshot["state"], "connected")
+        self.assertTrue(snapshot["chat"]["found"])
+        self.assertEqual(snapshot["totals"]["sessions"], 1)
+        for name, kwargs in (("messages", {}), ("conclusions", {}), ("context", {}), ("activity", {}), ("search", {"scope": "session", "query": "fixture", "limit": 7})):
+            with self.subTest(collector=name):
+                result = self.collect(name, **kwargs)
+                self.assertEqual(result["errors"], [])
+                self.assertTrue(result["ok"])
+        # The handler fails on any unexpected request, including get-or-create.
+        self.assertFalse(any(method == "POST" and path in (f"{ROOT}/sessions", "/v3/workspaces") for method, path, *_ in self.calls))
+
+    def collect_instructions(self):
+        return plugin_api._collect_instructions(
+            plugin_api.InstructionsRequest(stored_session_id="fixture-hermes"),
+            config_factory=lambda: self.config, client_factory=lambda _: self.client,
+            session_metadata_loader=lambda _: {},
+        )
+
+    def test_instructions_resolve_like_honcho_33(self):
+        self.workspace_config, self.session_config = self.WORKSPACE_33, self.SESSION_33
+        result = self.collect_instructions()
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["capabilities"]["instructions"])
+        self.assertEqual(result["server_version"], self.server_version)
+        self.assertTrue(result["configured"])
+        self.assertEqual(result["shared"], {"text": "Workspace shared.", "text_truncated": False, "source": "workspace.shared", "off": False})
+        resolved = {entry["module"]: (entry["source"], entry["text"], entry["off"]) for entry in result["agents"]}
+        self.assertEqual(resolved, {
+            "reasoning": ("workspace.shared", "Workspace shared.", False),
+            "summary": ("workspace.summary", "Workspace summary.", False),
+            "dialectic": ("session.dialectic", None, True),
+            "dream": ("session.dream", "Session dream.", False),
+            "peer_card": ("workspace.peer_card", "Workspace card.", False),
+        })
+        # Questions across sessions have no session level.
+        self.assertEqual((result["across_sessions"]["source"], result["across_sessions"]["text"]), ("workspace.dialectic", "Workspace answers."))
+
+    def test_unconfigured_33_workspace_reports_none_set(self):
+        result = self.collect_instructions()
+        self.assertTrue(result["capabilities"]["instructions"])
+        self.assertFalse(result["configured"])
+        self.assertTrue(all(entry["source"] is None for entry in result["agents"]))
+        self.assertIsNone(result["shared"]["source"])
+
+    def test_instructions_stay_hidden_on_older_or_unverified_servers(self):
+        for version, failure, reason in (("3.2.2", None, "3.3.0 or later"), ("development", None, "Couldn't confirm"), ("3.3.0", 503, "Couldn't confirm")):
+            with self.subTest(version=version, failure=failure):
+                self.calls.clear()
+                self.server_version = version
+                self.failures = {"/openapi.json": failure} if failure else {}
+                result = self.collect_instructions()
+                self.assertFalse(result["capabilities"]["instructions"])
+                self.assertIn(reason, result["reason"])
+                self.assertEqual(result["agents"], [])
+                self.assertFalse(result["configured"])
+                # Only the preflight's workspace and session checks were read.
+                self.assertEqual(sum(path.endswith("/list") for _, path, *_ in self.calls), 2)
+
+    def test_instructions_fail_closed_when_a_level_is_malformed_or_missing(self):
+        self.session_config = "not a configuration"
+        result = self.collect_instructions()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "unavailable")
+        self.assertEqual(result["agents"], [])
+        self.assertEqual([error["scope"] for error in result["errors"]], ["instructions.session"])
+        self.session_config = {}
+        self.session_exists = False
+        result = self.collect_instructions()
+        self.assertEqual(result["state"], "session_missing")
+        self.assertFalse(result["capabilities"]["instructions"])
+
+    def test_every_read_accepts_both_34_and_older_record_shapes(self):
+        self.workspace_config, self.session_config = self.WORKSPACE_33, self.SESSION_33
+        for include_uid, version in ((True, "3.4.1"), (False, "3.3.0")):
+            with self.subTest(uid=include_uid, server=version):
+                self.include_uid, self.server_version = include_uid, version
+                self.calls.clear()
+                for name, kwargs in (("snapshot", {}), ("messages", {}), ("conclusions", {}), ("context", {}), ("activity", {}), ("search", {"scope": "session", "query": "fixture", "limit": 7})):
+                    result = self.collect(name, **kwargs)
+                    self.assertEqual(result["errors"], [], name)
+                    self.assertTrue(result["ok"], name)
+                instructions = self.collect_instructions()
+                self.assertEqual(instructions["errors"], [])
+                self.assertTrue(instructions["capabilities"]["instructions"])
+                self.assertEqual(instructions["server_version"], version)
+                self.assertTrue(instructions["configured"])
 
     def test_search_preserves_selected_boundary(self):
         for scope, path in (("session", f"{SESSION_ROOT}/search"), ("peer", f"{ROOT}/peers/human/search"), ("workspace", f"{ROOT}/search")):

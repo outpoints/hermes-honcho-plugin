@@ -163,6 +163,13 @@ class FakeSession:
         page = self.messages(page=1, size=limit, reverse=True)
         return page.items
 
+    def summaries(self):
+        stamp = dt.datetime(2026, 8, 29, 12, 3, tzinfo=dt.timezone.utc)
+        return SimpleNamespace(
+            short_summary=SimpleNamespace(content="Stored short summary.", token_count=900, created_at=stamp),
+            long_summary=SimpleNamespace(content="Stored long summary.", token_count=3600, created_at=stamp),
+        )
+
 
 class FakeConfig:
     api_key = "test-secret-never-returned"
@@ -350,6 +357,13 @@ class SnapshotTests(unittest.TestCase):
         self.assertFalse(called)
         self.assertEqual(result["state"], "not_configured")
         self.assertFalse(result["ok"])
+
+    def test_hermes_context_cap_is_reported_only_when_valid(self):
+        for value, expected in ((4000, 4000), (None, None), (0, None), (-1, None), (True, None), ("4000", None)):
+            with self.subTest(value=value):
+                config = FakeConfig()
+                config.context_tokens = value
+                self.assertEqual(collect(config, FakeClient())["config"]["context_tokens"], expected)
 
     def test_per_session_mapping_source_uses_durable_session(self):
         config = FakeConfig()
@@ -754,6 +768,107 @@ class ContextTests(unittest.TestCase):
         self.assertIn("Peer-wide fixture context.", result["copy_text"])
         self.assertGreater(result["character_count"], 0)
 
+    def collect_context(self, session):
+        return plugin_api._collect_context(
+            plugin_api.ContextRequest(stored_session_id="stored-123", cwd="/work/hermes-honcho-plugin", token_budget=2048),
+            config_factory=FakeConfig,
+            client_factory=lambda _: FakeClient(session=session),
+            session_metadata_loader=lambda _: {},
+        )
+
+    def test_stored_summaries_are_reported_when_the_budget_has_no_room(self):
+        class NoRoomSession(FakeSession):
+            def context(self, summary=False, tokens=None, peer_target=None, peer_perspective=None):
+                # Honcho returns no summary when none fits 40% of the budget.
+                return SimpleNamespace(messages=[], summary=None, representation="", token_count=None)
+
+        result = self.collect_context(NoRoomSession())
+        self.assertEqual(result["state"], "connected")
+        self.assertEqual(result["session"]["summary"], "")
+        self.assertFalse(result["layers"]["summaries"])
+        self.assertEqual(result["stored_summaries"]["short"]["content"], "Stored short summary.")
+        self.assertEqual(result["stored_summaries"]["short"]["token_count"], 900)
+        self.assertEqual(result["stored_summaries"]["long"]["token_count"], 3600)
+        self.assertEqual(result["stored_summaries"]["long"]["created_at"], "2026-08-29T12:03:00Z")
+
+    def test_a_session_without_summaries_reports_both_as_absent(self):
+        class NewSession(FakeSession):
+            def summaries(self):
+                return SimpleNamespace(short_summary=None, long_summary=None)
+
+        result = self.collect_context(NewSession())
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["stored_summaries"], {"short": None, "long": None})
+
+    def test_failed_or_malformed_summary_read_keeps_the_other_layers(self):
+        class BrokenSummaries(FakeSession):
+            def summaries(self):
+                raise RuntimeError("summaries unavailable")
+
+        class MalformedSummaries(FakeSession):
+            def summaries(self):
+                return SimpleNamespace(short_summary=SimpleNamespace(content=["not text"], token_count=1), long_summary=None)
+
+        for session in (BrokenSummaries(), MalformedSummaries()):
+            with self.subTest(session=type(session).__name__):
+                result = self.collect_context(session)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["state"], "partial")
+                self.assertIsNone(result["stored_summaries"])
+                self.assertEqual(result["session"]["summary"], "Current Honcho session summary.")
+                self.assertEqual([error["scope"] for error in result["errors"]], ["context.summaries"])
+
+    def test_summary_token_counts_are_never_invented(self):
+        payload = plugin_api._summary_payload(SimpleNamespace(content="x", token_count=True, created_at=None))
+        self.assertIsNone(payload["token_count"])
+        self.assertIsNone(plugin_api._summary_payload(SimpleNamespace(content="x", token_count=-4))["token_count"])
+        self.assertIsNone(plugin_api._summary_payload(None))
+
+
+class InstructionResolutionTests(unittest.TestCase):
+    """Mirrors resolve_custom_instructions() in Honcho 3.3 src/utils/config_helpers.py."""
+
+    def resolve(self, session, workspace, module):
+        levels = [("session", plugin_api._instruction_values(session)), ("workspace", plugin_api._instruction_values(workspace))]
+        return plugin_api._resolve_instruction(levels, module)
+
+    def test_module_beats_shared_within_a_level(self):
+        workspace = {"custom_instructions": "Shared.", "summary": {"custom_instructions": "Summary only."}}
+        self.assertEqual(self.resolve({}, workspace, "summary")["source"], "workspace.summary")
+        self.assertEqual(self.resolve({}, workspace, "dream")["source"], "workspace.shared")
+
+    def test_a_more_specific_shared_value_beats_a_less_specific_module_value(self):
+        session = {"custom_instructions": "Session shared."}
+        workspace = {"summary": {"custom_instructions": "Workspace summary."}}
+        resolved = self.resolve(session, workspace, "summary")
+        self.assertEqual((resolved["source"], resolved["text"]), ("session.shared", "Session shared."))
+
+    def test_empty_or_blank_text_is_an_explicit_off_that_stops_fallback(self):
+        workspace = {"custom_instructions": "Shared."}
+        for value in ("", "   "):
+            with self.subTest(value=repr(value)):
+                resolved = self.resolve({"dialectic": {"custom_instructions": value}}, workspace, "dialectic")
+                self.assertEqual(resolved, {"text": None, "text_truncated": False, "source": "session.dialectic", "off": True})
+
+    def test_peer_card_never_falls_back_to_shared_text(self):
+        workspace = {"custom_instructions": "Shared."}
+        self.assertEqual(self.resolve({"custom_instructions": "Session."}, workspace, "peer_card"), {"text": None, "text_truncated": False, "source": None, "off": False})
+        self.assertEqual(self.resolve({}, {"peer_card": {"custom_instructions": "Card."}}, "peer_card")["source"], "workspace.peer_card")
+
+    def test_unset_and_non_text_values_are_not_set(self):
+        for configuration in ({}, None, {"summary": None}, {"summary": {"custom_instructions": 3}}, {"summary": "bad"}):
+            with self.subTest(configuration=configuration):
+                self.assertIsNone(self.resolve(configuration, {}, "summary")["source"])
+
+    def test_malformed_configuration_is_rejected(self):
+        with self.assertRaises(ValueError):
+            plugin_api._instruction_values(["not", "a", "dict"])
+
+    def test_long_text_is_bounded_and_flagged(self):
+        resolved = self.resolve({"custom_instructions": "x" * (plugin_api.MAX_INSTRUCTION_CHARS + 5)}, {}, "summary")
+        self.assertEqual(len(resolved["text"]), plugin_api.MAX_INSTRUCTION_CHARS)
+        self.assertTrue(resolved["text_truncated"])
+
 
 class ConclusionTests(unittest.TestCase):
     def test_attribution_preserves_parent_conclusions_and_legacy_unknowns(self):
@@ -1068,6 +1183,7 @@ class FailureAndBoundaryTests(unittest.TestCase):
                 "/ask",
                 "/correction-ticket",
                 "/corrections",
+                "/instructions",
             },
         )
 

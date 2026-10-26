@@ -8,8 +8,9 @@
 // stylesheet is checked once, from the prepared checkout's apps/desktop/dist).
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -36,8 +37,27 @@ function exportedNames(source) {
   return names
 }
 
-function checkSdk(label, sdkSource, iconsSource) {
-  const names = exportedNames(sdkSource)
+// Follow relative `export * from './x'` re-exports, as the SDK barrel uses for
+// its area constants. `read` returns a module's source, or null if absent.
+function sdkExports(read, path, seen = new Set()) {
+  if (seen.has(path)) return new Set()
+  seen.add(path)
+  const source = read(path)
+  if (source === null) throw new Error(`SDK module not found: ${path}`)
+  const names = exportedNames(source)
+  for (const match of source.matchAll(/export\s+\*\s+from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) {
+    // Repository paths, so git refs resolve the same way on every platform.
+    const base = posix.join(posix.dirname(path), match[1])
+    const target = ['.ts', '.tsx', '/index.ts', '/index.tsx'].map(suffix => base + suffix).find(candidate => read(candidate) !== null)
+    if (!target) throw new Error(`Re-exported SDK module not found: ${base}`)
+    for (const name of sdkExports(read, target, seen)) names.add(name)
+  }
+  return names
+}
+
+function checkSdk(label, read) {
+  const names = sdkExports(read, 'apps/desktop/src/sdk/index.ts')
+  const iconsSource = read('apps/desktop/src/lib/icons.ts')
   const missing = imported.filter(name => !names.has(name))
   const iconExports = exportedNames(iconsSource)
   const missingIcons = iconNames.filter(name => !iconExports.has(name))
@@ -50,13 +70,23 @@ const results = []
 const refs = process.argv.slice(2)
 if (refs.length) {
   for (const ref of refs) {
-    const show = path => execFileSync('git', ['-C', host, 'show', `${ref}:${path}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-    results.push(checkSdk(ref, show('apps/desktop/src/sdk/index.ts'), show('apps/desktop/src/lib/icons.ts')))
+    const show = path => {
+      try {
+        return execFileSync('git', ['-C', host, 'show', `${ref}:${path}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+      } catch {
+        return null
+      }
+    }
+    results.push(checkSdk(ref, show))
   }
 } else {
-  results.push(checkSdk('working tree',
-    await readFile(join(host, 'apps/desktop/src/sdk/index.ts'), 'utf8'),
-    await readFile(join(host, 'apps/desktop/src/lib/icons.ts'), 'utf8')))
+  results.push(checkSdk('working tree', path => {
+    try {
+      return readFileSync(join(host, ...path.split('/')), 'utf8')
+    } catch {
+      return null
+    }
+  }))
 }
 
 // Every literal in a className expression (including ternaries and cn(...)),

@@ -32,9 +32,12 @@ Supports Honcho 3.3.0 through 3.4.1 and Python SDK 2.6.0 and 2.7.0. See
   test fails against the 0.4.1 backend. Eight deliberate breakages of the new
   resolution, gating and summary logic were each caught by a test.
 - `scripts/check-ui-surface.mjs`: all 41 SDK imports and 8 icons exist in
-  Hermes v2026.9.21 (0.21.4) and v2026.9.24. `MessageTextContent` is still
-  absent in v2026.9.14, so `requires_hermes: ">=0.21.4"` holds. All 115
-  utility classes exist in the shipped stylesheet.
+  Hermes v2026.9.21 (0.21.4), v2026.9.24 and current main (9976f4857b).
+  `MessageTextContent` is still absent in v2026.9.14, so
+  `requires_hermes: ">=0.21.4"` holds. All 115 utility classes exist in the
+  shipped stylesheet. Hermes main moved `PANES_AREA` and `STATUSBAR_AREAS` into
+  `sdk/areas.ts` behind `export * from './areas'`, so the checker now follows
+  relative `export *` re-exports. A fake import still fails it.
 - `scripts/screenshots.mjs` against host bf0203a794: 30 synthetic captures and
   17 axe WCAG A/AA audits with 0 violations, 0 browser errors, 0 external
   requests and 0 uploads. Four captures are new (instructions, instructions in

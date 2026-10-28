@@ -106,6 +106,15 @@ hermes -p <profile> plugins install outpoints/hermes-honcho-plugin --enable
 Restart Hermes after installing so each profile's backend loads the plugin. If
 **Honcho** does not appear in the sidebar, turn it on in **Settings → Plugins**.
 
+## Languages
+
+The plugin follows the app's language: it registers its own `en` and `zh` bundles
+through Hermes' plugin-i18n surface, and any key a locale does not carry falls
+back to the English sentence. Chinese ships complete; adding a language means one
+more object in `COPY` next to the two that are there. Nothing is read from the
+network, and the source still renders English before `register()` binds the host
+translator, so a host older than the plugin-i18n surface keeps working.
+
 ## What it reads and sends
 
 - Requests go only to the Honcho server each profile is already configured to

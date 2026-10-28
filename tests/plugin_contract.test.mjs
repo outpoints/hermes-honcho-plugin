@@ -116,7 +116,7 @@ test('narrow layout keeps navigation and primary actions usable without horizont
 })
 
 test('current-session ingestion is explicit, focus-bound, and uses Hermes upload transport', () => {
-  assert.match(source, /'Add to session'/)
+  assert.match(source, /'Add to session'|t\('add_to_session'\)/)
   assert.match(source, /\/upload-ticket/)
   assert.match(source, /\/uploads\/\$\{encodeURIComponent\(ticket\.ticket\)\}/)
   assert.match(source, /upload:\s*\{\s*filename,\s*contentType,\s*bytes\s*\}/)

@@ -13,6 +13,11 @@
 ## Development rules
 
 - Verify SDK imports against the current Hermes Desktop SDK before adding one.
+- Every user-facing string goes through `t('key')`, with the key present in both
+  `COPY.en` and `COPY.zh`. The English sentence lives in the bundle rather than in
+  the source, so the plugin paints the same copy before `register()` binds the
+  host translator; `tests/i18n.test.mjs` fails on a key missing from either bundle
+  and on a Chinese entry that is still English.
 - Keep polling at 10 seconds or slower and share a React Query cache key.
 - Preserve partial results when an individual Honcho metric fails.
 - Cover malformed input, disconnected Honcho, and missing-session states.

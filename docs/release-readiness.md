@@ -1,5 +1,63 @@
 # Release verification
 
+## 0.6.0, 2026-11-11
+
+Adds session settings: what Honcho learns from new messages in the focused
+chat's Honcho session. See [architecture](architecture.md#session-settings)
+for the decisions.
+
+### Changes
+
+- New **Settings** tab. Conclusions, summaries, dreams and peer card updates
+  can each be set to Inherit, On or Off for the session. Each row shows the
+  value in effect and whether it comes from the session, the workspace or the
+  server default.
+- Per-peer settings for the session: whether Honcho learns from the peer's
+  messages, and whether the peer builds its own view of the others. The Hermes
+  peer's row says that turning its view off changes what Hermes recalls.
+- Changes are reviewed together and saved with a sticky Save bar. The backend
+  checks a revision fingerprint, rewrites only the changed sections from the
+  values it just read (a session update replaces whole sections), sends each
+  write once with no retry, and reads every value back. Each change reports
+  saved, not saved, not sent or unknown.
+- Writes need Honcho 3.0.0 or newer. Older or unconfirmed servers show the
+  values read-only.
+- New `/session-settings`, `/session-settings-ticket` and
+  `/session-settings-save` endpoints.
+- The screenshot harness finds stylesheets in newer Desktop builds, which no
+  longer link them from `index.html`.
+
+### Verification
+
+- `./scripts/check.sh`: 96 JavaScript and 133 Python tests pass.
+- The Python suite passes under `honcho-ai` 2.2.0, 2.4.0, 2.5.0, 2.6.0 and
+  2.7.0 overlays through the managed launcher, and with the installed 2.5.1.
+  Two deliberate breakages (a section rebuilt from scratch, a disabled
+  revision check) were each caught by a test.
+- The offline Honcho fixture merges writes the way 3.5.0 does. Tests cover
+  preserved section fields, inherit, peer field merges, single-use tickets,
+  focus mismatch, expiry, a change made after review, a session deleted before
+  save, a failed write with no retry, a partial save, a lost readback,
+  disconnected Honcho, and malformed or extra input.
+- `scripts/check-ui-surface.mjs`: all 41 SDK imports and 8 icons exist in
+  Hermes v2026.9.21 (0.21.4) and main (9373dc1e31). All 121 utility classes
+  exist in the shipped stylesheet. No new SDK imports.
+- `scripts/check-host.mjs`: 15 transport checks and 6 cross-profile checks
+  pass offline.
+- `scripts/screenshots.mjs` against host 2bd378ed1b: 36 synthetic captures and
+  23 axe WCAG A/AA audits with 0 violations, 0 browser errors and 0 external
+  requests. Six captures are new (Settings). Three focus-change steps were
+  left out of this run because they time out on this host before and after
+  this release. See [screenshots](screenshots/README.md). Catalog art is
+  unchanged.
+- `hermes plugins validate . --json` passes with the same rule 9 warning as
+  0.5.0. `hermes plugins doctor --ci .` passes.
+- Read-only live check against Honcho 3.5.0 in a fresh process: the settings
+  read returned `connected` with no errors for two sessions, including one
+  whose conclusions, summaries and dreams are off.
+- Not yet verified: a save against a live server, and a running Desktop app.
+  Running Hermes backends keep the old Python until they restart.
+
 ## 0.5.0, 2026-10-25
 
 Supports Honcho 3.3.0 through 3.4.1 and Python SDK 2.6.0 and 2.7.0. See

@@ -1,5 +1,24 @@
 # Honcho compatibility verification
 
+## 0.6.0: session settings, Honcho 3.0.0 and newer
+
+Settings are read on every Honcho 3 server. Writes are enabled from 3.0.0,
+where the session's `deriver` section became `reasoning`. The behaviour they
+rely on, verified in Honcho source at each tag:
+
+| Behaviour | Since | Source |
+| --- | --- | --- |
+| Session configuration with `reasoning`, `summary`, `dream`, `peer_card` sections | 3.0.0 (`deriver` before) | `src/schemas`, `get_configuration()` |
+| Session update merges top-level keys, replacing each section it is sent | 2.5.0 | `crud/session.py:update_session` |
+| Session-peer update merges the fields it is sent | 2.5.0 | `crud/session.py:set_peer_config` |
+| Adding an active peer again keeps its stored session settings | 2.5.0 | `_get_or_add_peers_to_session` |
+| `dialectic` section and per-section `custom_instructions` | 3.3.0 | `src/schemas/configuration.py` |
+
+Reads use the list endpoint as JSON, as `/instructions` does, so 3.3
+configuration does not break SDK 2.5.1 and older. Writes use the SDK client's
+own transport. Tested with SDK 2.2.0, 2.4.0, 2.5.0, 2.5.1, 2.6.0 and 2.7.0.
+Live read-only check against 3.5.0.
+
 ## 0.5.0: Honcho 3.3.0 through 3.4.1, SDK 2.6.0 and 2.7.0
 
 ### Honcho 3.4.0 and 3.4.1

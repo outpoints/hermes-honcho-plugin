@@ -245,6 +245,9 @@ fields used by `/snapshot`.
 | `/ask` | New reasoning call for the configured observer and target user | Session or across sessions; query 1 to 2,000 characters; explicit submit; 90-second collector timeout; no retry |
 | `/correction-ticket` | Binds one corrective fact and optional original record to the confirmed relationship/session | Content 1 to 4,000 characters; two-minute one-time ticket; no write |
 | `/corrections` | Adds an explicit conclusion and verifies exact ID/content/target | Ticket only; no automatic retry; unknown outcomes remain unknown |
+| `/session-settings` | The session's learning switches and per-peer observation settings, each with its effective value and source, plus a revision fingerprint and the session queue | Raw JSON reads, no SDK models; each read degrades alone; no polling |
+| `/session-settings-ticket` | Checks reviewed changes against a fresh read and the revision the user saw, drops no-ops, and binds the rest to the focus and session | At most 20 peers; peer IDs match Honcho's name pattern; two-minute one-time ticket; no write |
+| `/session-settings-save` | Re-reads, rejects a changed revision, writes each section or peer once, then reads every value back | Ticket only; no retry; per-change `verified`, `not_applied`, `not_sent` or `unknown`; 40-second collector timeout |
 | `/upload-ticket` | Revalidates and binds a proposed file/text write to the exact existing session and user peer | Metadata only; supported types only; one-time ticket expires after two minutes |
 | `/uploads/{ticket}` | Sends one PDF, JSON, or text payload through `Session.upload_file` and verifies every returned message | Multipart upload; authoritative file-size enforcement belongs to Honcho |
 
@@ -288,13 +291,67 @@ Pane queries are disabled while the pane is collapsed.
 - Discovery and ordinary read routes do not create or delete sessions, peers,
   scopes, messages, conclusions, or reasoning work. `/ask` is separately
   triggered and may incur reasoning usage.
-- Both write paths require explicit UI confirmation and short-lived one-time
-  target tickets. They create only session messages or an explicit conclusion
-  in the configured agent-to-user relationship with current-session attribution.
+- Every write path requires explicit UI confirmation and a short-lived one-time
+  target ticket. Corrections and uploads create only session messages or an
+  explicit conclusion in the configured agent-to-user relationship with
+  current-session attribution. Session settings change only the focused
+  session's `reasoning`, `summary`, `dream` and `peer_card` switches and its
+  members' `observe_me` and `observe_others`. They never touch workspace or
+  peer-wide settings, scope members, metadata, or custom instructions.
 - Upload content type is limited to PDF, JSON, and `text/*`. File bytes are not
   stored in the ticket or logged.
 - A verified upload response includes exact readback of every created message
   ID. An ambiguous timeout is never represented as a safe retry.
+
+## Session settings
+
+Honcho resolves each learning switch per message: the message's own
+configuration, then the session's, then the workspace's, then the server's
+defaults (`get_configuration()` in `src/utils/config_helpers.py`). The
+deriver, summarizer and dreamer check it when work is queued. Observation is
+resolved per sender by `get_effective_observe_me()`: the session-peer value,
+then the peer's own, then on. A peer observes others only when its session
+value is true.
+
+Decisions:
+
+- **Scope.** The plugin edits session-level values only. Workspace settings
+  and the peer-wide `observe_me` affect every session, so they stay read-only
+  context. Message-level settings are fixed when Hermes sends a message.
+- **Whole-section writes.** A session update merges top-level keys only, so
+  `{"reasoning": {"enabled": false}}` would drop a stored
+  `reasoning.custom_instructions`. The backend rebuilds each changed section
+  from the value it just read and changes one field. Inherit removes the field.
+  A session-peer update merges the fields it is sent, so only changed fields
+  are sent.
+- **No SDK models.** honcho-ai 2.5.1 and older reject `custom_instructions`
+  inside sections, so reads use the list endpoint as JSON and writes use the
+  client's own transport with the profile's credentials.
+- **Revision check.** The read returns a SHA-256 of the session configuration
+  and every listed member's session values. The ticket and the save both
+  compare it with a fresh read, so a change made elsewhere after the user
+  opened the tab rejects the save before any write.
+- **Get-or-create.** Honcho's session update creates a missing session. The
+  save re-verifies the session through the non-creating list read immediately
+  before writing and sends nothing if it is gone.
+- **Version gate.** Writes need 3.0.0, where `deriver` became `reasoning`.
+  Unknown versions are read-only. Hermes adds both peers every time it opens a
+  session. Since 2.5.0, adding an active member keeps its stored session
+  settings (only `PUT .../peers` replaces them), so a change made here
+  survives Hermes reopening the session.
+- **Legacy values.** A session may still hold `deriver.enabled` or
+  `skip_deriver`. The read mirrors `normalize_configuration_dict()` to show
+  the value in effect and marks it as an older setting. The plugin never
+  writes those keys.
+- **Hermes recall.** Hermes reads the session's `ai_observe_others` when it
+  opens a session and uses it to choose the recall observer. The plugin says
+  so on that row, because turning it off changes what Hermes recalls, not
+  only what Honcho learns.
+- **Limits stated in the UI.** The switches gate generation, not recall.
+  Queued work keeps the configuration it was queued with. Dreams run per
+  observer and observed pair across sessions and check the configuration of
+  the session that holds the newest explicit conclusion, so a session's dream
+  switch cannot keep its conclusions out of a dream started elsewhere.
 
 ## Failure model
 

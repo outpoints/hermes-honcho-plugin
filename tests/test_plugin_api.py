@@ -1184,6 +1184,9 @@ class FailureAndBoundaryTests(unittest.TestCase):
                 "/correction-ticket",
                 "/corrections",
                 "/instructions",
+                "/session-settings",
+                "/session-settings-ticket",
+                "/session-settings-save",
             },
         )
 

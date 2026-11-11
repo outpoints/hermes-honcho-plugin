@@ -167,6 +167,60 @@ export const fixtures = {
   '/instructions': { ...base, session_id: sessionId, workspace_id: 'demo-workspace', ...instructions },
 }
 
+// Session settings in the backend's shape: each switch with the value in
+// effect and where it comes from, and each peer's settings in this session.
+const learningRow = (key, choice, workspace = null) => {
+  const session = choice === 'inherit' ? null : choice === 'on'
+  const source = session !== null ? 'session' : workspace !== null ? 'workspace' : 'server'
+  return { key, choice, session, legacy: false, workspace, effective: session ?? workspace, source }
+}
+const settingsPeer = (id, role, observeMe, observeOthers) => ({
+  id, role, observe_me: observeMe, observe_others: observeOthers, peer_observe_me: null,
+  effective_observe_me: observeMe ?? true, observe_me_source: observeMe === null ? 'default' : 'session',
+  effective_observe_others: observeOthers === true, observe_others_source: observeOthers === null ? 'unset' : 'session',
+})
+const sessionSettings = {
+  ...base, session_id: sessionId, workspace_id: 'demo-workspace', server_version: '3.5.0', revision: '5e'.repeat(32),
+  capabilities: { learning: true, observation: true }, reasons: {}, user_peer: 'demo-user', ai_peer: 'demo-assistant',
+  learning: [learningRow('reasoning', 'inherit'), learningRow('summary', 'inherit', true), learningRow('dream', 'off'), learningRow('peer_card', 'inherit')],
+  peers: [settingsPeer('demo-user', 'user', true, true), settingsPeer('demo-assistant', 'ai', true, true)],
+  peers_truncated: false, queue: sessionQueue,
+}
+let settingsState = structuredClone(sessionSettings)
+let settingsRevision = 0
+const settingsTickets = new Map()
+
+function plannedSettings(body) {
+  const planned = []
+  for (const [key, to] of Object.entries(body.learning || {})) {
+    const row = settingsState.learning.find(item => item.key === key)
+    if (row && row.choice !== to) planned.push({ id: `learning.${key}`, kind: 'learning', key, from: row.choice, to })
+  }
+  for (const [peerId, change] of Object.entries(body.observation || {})) {
+    const peer = settingsState.peers.find(item => item.id === peerId)
+    for (const [field, to] of Object.entries(change)) {
+      const from = peer[field] === null ? 'unset' : peer[field] ? 'on' : 'off'
+      if (to && from !== to) planned.push({ id: `observation.${peerId}.${field}`, kind: 'observation', peer_id: peerId, field, from, to })
+    }
+  }
+  return planned
+}
+
+function applySettings(planned) {
+  for (const change of planned) {
+    if (change.kind === 'learning') {
+      const index = settingsState.learning.findIndex(item => item.key === change.key)
+      settingsState.learning[index] = learningRow(change.key, change.to, settingsState.learning[index].workspace)
+    } else {
+      const index = settingsState.peers.findIndex(item => item.id === change.peer_id)
+      const peer = settingsState.peers[index]
+      const next = { observe_me: peer.observe_me, observe_others: peer.observe_others, [change.field]: change.to === 'on' }
+      settingsState.peers[index] = settingsPeer(peer.id, peer.role, next.observe_me, next.observe_others)
+    }
+  }
+  settingsState.revision = (++settingsRevision).toString(16).padStart(64, '0')
+}
+
 let ticketSequence = 0
 const correctionTickets = new Map()
 const correctionTarget = { workspace_id: 'demo-workspace', session_id: sessionId, observer_id: 'demo-assistant', observed_id: 'demo-user' }
@@ -208,6 +262,21 @@ export async function fixtureTransport(path, options = {}) {
     const content = correctionTickets.get(body.ticket)
     correctionTickets.delete(body.ticket)
     return { ...base, verified: true, outcome: 'verified', target: correctionTarget, item: { ...conclusions[0], id: `demo-correction-${ticketSequence}`, content, created_at: at(15, '10:40'), level: 'explicit', source_ids: [], times_derived: 1 } }
+  }
+  if (endpoint === '/session-settings') return structuredClone(settingsState)
+  if (endpoint === '/session-settings-ticket') {
+    if (body.revision !== settingsState.revision) return { ...base, ok: false, state: 'stale', ticket: null, errors: [{ scope: 'settings', message: 'These settings changed after you opened them.' }] }
+    const ticket = `demo-settings-ticket-${++ticketSequence}`
+    const changes = plannedSettings(body)
+    settingsTickets.set(ticket, changes)
+    return { ...base, state: 'ready', ticket, target: { workspace_id: 'demo-workspace', session_id: sessionId }, changes }
+  }
+  if (endpoint === '/session-settings-save') {
+    if (!settingsTickets.has(body.ticket)) throw new Error('Synthetic settings ticket is missing or already consumed')
+    const changes = settingsTickets.get(body.ticket)
+    settingsTickets.delete(body.ticket)
+    applySettings(changes)
+    return { ...structuredClone(settingsState), verified: true, outcome: 'verified', state: 'verified', target: { workspace_id: 'demo-workspace', session_id: sessionId }, changes: changes.map(change => ({ ...change, status: 'verified' })) }
   }
   if (!(endpoint in fixtures)) throw new Error(`Demo blocks writes and unknown endpoints: ${endpoint}`)
   return structuredClone(fixtures[endpoint])

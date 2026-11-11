@@ -66,6 +66,7 @@ const SECTIONS = [
   { id: 'ask', label: 'Ask' },
   { id: 'messages', label: 'Messages' },
   { id: 'context', label: 'Context' },
+  { id: 'settings', label: 'Settings' },
   { id: 'status', label: 'Status' }
 ]
 const CONTEXT_BUDGETS = [1024, 2048, 4096, 8192, 16384, 32000]
@@ -2512,6 +2513,447 @@ function ContextSection() {
   })
 }
 
+// ── Session settings ────────────────────────────────────────────────────────
+// What Honcho does with new messages saved to this Honcho session. Honcho
+// resolves each switch per message: the session's value, then the workspace's,
+// then the server default. None of them hide or remove stored memory.
+
+const LEARNING_ROWS = [
+  { key: 'reasoning', label: 'Conclusions', description: 'Draws conclusions about each peer from new messages.' },
+  { key: 'summary', label: 'Summaries', description: 'Keeps this session’s summary up to date.' },
+  { key: 'dream', label: 'Dreams', description: 'Combines conclusions into deductions and patterns. A dream started from another session can still use this session’s conclusions.', needsConclusions: true },
+  { key: 'peer_card', label: 'Peer card updates', description: 'Updates peer cards from what Honcho learns here.', needsConclusions: true }
+]
+const OBSERVATION_ROWS = [
+  { field: 'observe_me', label: 'Learn from their messages', description: 'Off means nobody learns from this peer’s new messages in this session.' },
+  { field: 'observe_others', label: 'Build a view of others', description: 'This peer keeps its own picture of the other peers, from this session.' }
+]
+const LEARNING_OPTIONS = [{ id: 'inherit', label: 'Inherit' }, { id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]
+const OBSERVATION_OPTIONS = [{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]
+const CHOICE_LABELS = { inherit: 'Inherit', on: 'On', off: 'Off', unset: 'Not set' }
+const PEER_ROLES = { user: 'User', ai: 'Hermes', peer: 'Peer' }
+const CHANGE_STATUS = { verified: 'Saved', not_applied: 'Not saved', not_sent: 'Not sent', unknown: 'Unknown' }
+const EMPTY_SETTINGS_DRAFT = { learning: {}, observation: {} }
+
+function onOff(value) {
+  return value ? 'On' : 'Off'
+}
+
+function storedChoice(value) {
+  return value === null || value === undefined ? 'unset' : value ? 'on' : 'off'
+}
+
+function learningStatus(row) {
+  switch (row.source) {
+    case 'session': return `${onOff(row.effective)} · ${row.legacy ? 'an older session setting' : 'set for this session'}`
+    case 'workspace': return `${onOff(row.effective)} · from the workspace`
+    case 'unknown': return 'Couldn’t read the workspace setting'
+    default: return 'Server default'
+  }
+}
+
+function observationStatus(peer, field) {
+  const source = peer[`${field}_source`]
+  const value = peer[`effective_${field}`]
+  if (source === 'session') return `${onOff(value)} · set for this session`
+  if (source === 'peer') return `${onOff(value)} · from the peer’s own setting`
+  if (source === 'unset') return 'Off · not set'
+  return 'On · default'
+}
+
+// The control shows the stored value, or the value in effect when the session
+// sets none. Choosing what is already in effect is not a change.
+function observationBase(peer, field) {
+  const stored = storedChoice(peer[field])
+  return stored === 'unset' ? (peer[`effective_${field}`] ? 'on' : 'off') : stored
+}
+
+// Every difference between the draft and the values Honcho returned, in the
+// order the rows appear. Saving sends exactly these.
+function settingsChanges(data, draft) {
+  const changes = []
+  for (const row of data?.learning || []) {
+    const to = draft.learning[row.key]
+    const label = LEARNING_ROWS.find(item => item.key === row.key)?.label || row.key
+    if (to && to !== row.choice) changes.push({ id: `learning.${row.key}`, kind: 'learning', key: row.key, label, from: row.choice, to })
+  }
+  for (const peer of data?.peers || []) {
+    for (const { field, label } of OBSERVATION_ROWS) {
+      const to = draft.observation[peer.id]?.[field]
+      const from = storedChoice(peer[field])
+      if (to && to !== from) changes.push({ id: `observation.${peer.id}.${field}`, kind: 'observation', peerId: peer.id, field, label: `${peer.id}: ${label}`, from, to })
+    }
+  }
+  return changes
+}
+
+function settingsRequestBody(changes) {
+  const learning = {}
+  const observation = {}
+  for (const change of changes) {
+    if (change.kind === 'learning') learning[change.key] = change.to
+    else observation[change.peerId] = { ...observation[change.peerId], [change.field]: change.to }
+  }
+  return { learning, observation }
+}
+
+// Conclusions off also stops dreams and peer card updates for this session.
+function conclusionsOff(data, draft) {
+  const row = data?.learning?.find(item => item.key === 'reasoning')
+  if (!row) return false
+  const choice = draft.learning.reasoning || row.choice
+  if (choice !== 'inherit') return choice === 'off'
+  return row.legacy ? row.effective === false : row.workspace === false
+}
+
+function sameSettingsTarget(actual, expected) {
+  return Boolean(actual && expected && ['workspace_id', 'session_id'].every(key => actual[key] && actual[key] === expected[key]))
+}
+
+function settingsError(message, outcome, extra = {}) {
+  return Object.assign(new Error(message), { outcome, ...extra })
+}
+
+function firstSettingsMessage(result) {
+  const errors = result?.errors || []
+  return (errors.find(error => error.scope === 'settings') || errors.find(error => error.scope === 'settings.save') || errors[0])?.message
+}
+
+async function saveSessionSettingsForFocus(focus, target, revision, changes) {
+  const ticket = await requestForFocus(focus, '/session-settings-ticket', {
+    method: 'POST', body: { ...focus.body, revision, ...settingsRequestBody(changes) }, timeoutMs: 22_000
+  })
+  if (!ticket?.ok || !ticket.ticket) {
+    throw settingsError(firstSettingsMessage(ticket) || 'Honcho couldn’t check these changes. Nothing was saved.', 'rejected')
+  }
+  if (!sameSettingsTarget(ticket.target, target)) throw settingsError('The Honcho session changed. Nothing was saved. Review this session’s settings again.', 'rejected')
+  const planned = (ticket.changes || []).map(change => change.id).sort().join('|')
+  if (planned !== changes.map(change => change.id).sort().join('|')) {
+    throw settingsError('Honcho’s current values differ from what you reviewed. Nothing was saved. Refresh and review again.', 'rejected')
+  }
+  assertCurrentFocus(focus)
+  let result
+  try {
+    result = await requestForFocus(focus, '/session-settings-save', { method: 'POST', body: { ...focus.body, ticket: ticket.ticket }, timeoutMs: 45_000 })
+    assertCurrentFocus(focus)
+  } catch {
+    throw settingsError('The response was lost, so some changes may be saved. Refresh before changing them again.', 'unknown')
+  }
+  const reported = new Map((result?.changes || []).map(change => [change.id, change.status]))
+  const verified = result?.ok && result.verified && result.outcome === 'verified' && sameSettingsTarget(result.target, target)
+    && reported.size === changes.length && changes.every(change => reported.get(change.id) === 'verified')
+  if (!verified) {
+    const outcome = ['partial', 'rejected'].includes(result?.outcome) ? result.outcome : 'unknown'
+    const message = outcome === 'partial'
+      ? 'Some changes were saved and some weren’t.'
+      : outcome === 'rejected'
+        ? firstSettingsMessage(result) || 'Honcho didn’t save these changes.'
+        : 'Honcho didn’t confirm the new values, so some may be saved. Refresh before changing them again.'
+    throw settingsError(message, outcome, { changes: result?.changes || [], detail: outcome === 'partial' ? firstSettingsMessage(result) : null })
+  }
+  return result
+}
+
+function SettingRow({ label, description, status, note, changed, control }) {
+  return jsxs('li', {
+    className: 'grid min-w-0 py-2',
+    style: { gridTemplateColumns: 'minmax(0, 1fr) auto', columnGap: 16, alignItems: 'start' },
+    children: [
+      jsxs('div', {
+        className: 'min-w-0 space-y-0.5',
+        children: [
+          jsx('div', { className: 'text-xs font-medium text-foreground', children: label }),
+          jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: description }),
+          jsxs('p', {
+            className: 'text-[11px] leading-5 text-(--ui-text-tertiary)',
+            children: [status, changed ? jsxs('span', { className: 'text-primary', children: [' · ', 'Unsaved'] }) : null]
+          }),
+          note ? jsx('p', { className: 'text-[11px] leading-5 text-(--ui-text-secondary)', style: PROSE, children: note }) : null
+        ]
+      }),
+      jsx('div', { role: 'group', 'aria-label': label, className: 'pt-0.5', children: control })
+    ]
+  })
+}
+
+function SettingsGroup({ title, meta, note, children }) {
+  return jsxs('section', {
+    className: 'min-w-0 space-y-1',
+    children: [
+      jsx(RegionHeading, { meta, children: title }),
+      children,
+      note ? jsx('p', { className: 'pt-1 text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: note }) : null
+    ]
+  })
+}
+
+// One reason shown once above both groups when it locks both.
+function sharedSettingsReason(data) {
+  const { capabilities = {}, reasons = {} } = data || {}
+  return !capabilities.learning && !capabilities.observation && reasons.learning && reasons.learning === reasons.observation ? reasons.learning : null
+}
+
+function LearningSettings({ data, draft, onChange, disabled }) {
+  const enabled = data.capabilities?.learning && !disabled
+  const skipped = conclusionsOff(data, draft)
+  return jsx(SettingsGroup, {
+    title: 'Learning from new messages',
+    note: data.capabilities?.learning
+      ? 'Inherit uses the workspace setting, then the server default. Honcho ships with each one on.'
+      : sharedSettingsReason(data) ? null : data.reasons?.learning,
+    children: jsx('ul', {
+      'aria-label': 'Learning from new messages',
+      className: 'min-w-0',
+      children: LEARNING_ROWS.map(spec => {
+        const row = data.learning?.find(item => item.key === spec.key)
+        if (!row) return null
+        const value = draft.learning[spec.key] || row.choice
+        return jsx(SettingRow, {
+          label: spec.label,
+          description: spec.description,
+          status: learningStatus(row),
+          note: spec.needsConclusions && skipped ? 'Skipped while conclusions are off.' : null,
+          changed: value !== row.choice,
+          control: jsx(SegmentedControl, { value, options: LEARNING_OPTIONS, disabled: !enabled, onChange: next => onChange('learning', spec.key, next, row.choice) })
+        }, spec.key)
+      })
+    })
+  })
+}
+
+function PeerSettings({ peer, data, draft, onChange, disabled }) {
+  const enabled = data.capabilities?.observation && !disabled
+  return jsxs('div', {
+    className: 'min-w-0',
+    children: [
+      jsxs('div', {
+        ...SELECTABLE,
+        className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 pt-2',
+        children: [
+          jsx('span', { className: 'font-mono text-[11px] text-foreground', style: { overflowWrap: 'anywhere' }, children: peer.id }),
+          jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: PEER_ROLES[peer.role] || PEER_ROLES.peer })
+        ]
+      }),
+      jsx('ul', {
+        'aria-label': `Settings for ${peer.id}`,
+        className: 'min-w-0',
+        children: OBSERVATION_ROWS.map(spec => {
+          const base = observationBase(peer, spec.field)
+          const value = draft.observation[peer.id]?.[spec.field] || base
+          const hermesView = peer.role === 'ai' && spec.field === 'observe_others'
+          return jsx(SettingRow, {
+            label: spec.label,
+            description: spec.description,
+            status: observationStatus(peer, spec.field),
+            note: hermesView
+              ? `Hermes recalls through this view. Turned off, Hermes reads ${text(data.user_peer, 'the user')}’s own memory for this session, starting the next time it opens the session.`
+              : null,
+            changed: value !== base,
+            control: jsx(SegmentedControl, { value, options: OBSERVATION_OPTIONS, disabled: !enabled, onChange: next => onChange('observation', `${peer.id}\u0000${spec.field}`, next, base) })
+          }, spec.field)
+        })
+      })
+    ]
+  })
+}
+
+function ObservationSettings({ data, draft, onChange, disabled }) {
+  const peers = data.peers || []
+  return jsx(SettingsGroup, {
+    title: 'Peers in this session',
+    meta: peers.length ? plural(peers.length, 'peer') : null,
+    note: [
+      data.capabilities?.observation
+        ? 'Honcho applies these to new messages right away. Hermes reads them when it opens the session.'
+        : sharedSettingsReason(data) ? null : data.reasons?.observation,
+      data.peers_truncated ? `Showing the first ${number(peers.length)} peers.` : null
+    ].filter(Boolean).join(' '),
+    children: peers.length
+      ? jsx('div', { className: 'min-w-0 space-y-1', children: peers.map(peer => jsx(PeerSettings, { peer, data, draft, onChange, disabled }, peer.id)) })
+      : jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', children: 'No peers to show.' })
+  })
+}
+
+function queueSummary(queue) {
+  if (!queue) return null
+  const parts = [
+    queue.in_progress ? `${number(queue.in_progress)} running` : null,
+    queue.pending ? `${number(queue.pending)} waiting` : null
+  ].filter(Boolean)
+  if (!parts.length) return 'Nothing is queued for this session.'
+  return `Queued for this session: ${parts.join(', ')}. Queued work keeps the settings it had when it was queued.`
+}
+
+function ChangeList({ changes, statuses = null }) {
+  return jsx('ul', {
+    ...SELECTABLE,
+    'aria-label': statuses ? 'Result for each change' : 'Changes to save',
+    className: 'min-w-0 space-y-1',
+    children: changes.map(change => jsxs('li', {
+      className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5',
+      children: [
+        jsx('span', { className: 'text-foreground', style: { overflowWrap: 'anywhere' }, children: change.label }),
+        jsx('span', { className: 'tabular-nums text-(--ui-text-secondary)', children: `${CHOICE_LABELS[change.from] || change.from} → ${CHOICE_LABELS[change.to] || change.to}` }),
+        statuses ? jsx('span', { className: 'text-(--ui-text-tertiary)', children: CHANGE_STATUS[statuses.get(change.id)] || 'Unknown' }) : null
+      ]
+    }, change.id))
+  })
+}
+
+// The full list and target, at the end of the page.
+function SettingsReview({ changes, target, profile }) {
+  if (!changes.length) return null
+  return jsxs('section', {
+    'aria-label': 'Review changes',
+    className: 'min-w-0 space-y-2',
+    style: { borderTop: '1px solid var(--ui-stroke-tertiary)', paddingTop: 16 },
+    children: [
+      jsx(RegionHeading, { meta: plural(changes.length, 'change'), children: 'Review changes' }),
+      jsx(ChangeList, { changes }),
+      jsx(TargetList, { rows: [['Profile', profile], ['Workspace', target?.workspace_id], ['Session', target?.session_id]] }),
+      jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: 'Applies to every Hermes chat saved to this session, for messages saved after the change.' })
+    ]
+  })
+}
+
+// Stays in view while there is something to save or a result to read, so
+// Save is reachable from the first row and the outcome is never off-screen.
+function SettingsActionBar({ changes, attempted, session, mutation, onDiscard, onSave, blocked }) {
+  const error = mutation.error
+  const saved = Boolean(mutation.data && !changes.length && !error)
+  if (!changes.length && !saved && !error) return null
+  const statuses = error?.changes?.length ? new Map(error.changes.map(change => [change.id, change.status])) : null
+  const result = error
+    ? jsx(StateLine, {
+        tone: error.outcome === 'rejected' ? 'warn' : 'bad',
+        title: error.outcome === 'unknown' ? 'Outcome unknown' : error.outcome === 'partial' ? 'Partly saved' : 'Not saved',
+        children: jsxs('div', { className: 'space-y-2', children: [error.message, error.detail ? jsx('div', { children: error.detail }) : null, statuses ? jsx(ChangeList, { changes: attempted, statuses }) : null] })
+      })
+    : saved
+      ? jsx(StateLine, { tone: 'good', title: 'Saved and verified', children: `Honcho returned the new value for ${plural(mutation.data.changes.length, 'change')}. It applies them to messages saved from now on.` })
+      : null
+  const actions = changes.length
+    ? jsxs('div', {
+        className: 'flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2',
+        children: [
+          jsxs('span', { className: 'min-w-0 flex-1 text-xs leading-5 text-foreground', style: { overflowWrap: 'anywhere' }, children: [mutation.isPending ? `Saving ${plural(changes.length, 'change')} to ` : `${plural(changes.length, 'unsaved change')} to `, code(session)] }),
+          jsxs('div', {
+            className: 'ml-auto flex items-center gap-2',
+            children: [
+              jsx(Button, { variant: 'ghost', size: 'sm', disabled: mutation.isPending, onClick: onDiscard, children: 'Discard' }),
+              jsx(Button, { size: 'sm', disabled: blocked, onClick: onSave, children: mutation.isPending ? 'Saving…' : `Save ${plural(changes.length, 'change')}` })
+            ]
+          })
+        ]
+      })
+    : null
+  return jsx('div', {
+    role: 'region',
+    'aria-label': 'Save session settings',
+    className: 'min-w-0 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) px-3 py-2 shadow-nous',
+    style: { position: 'sticky', bottom: 12, zIndex: 10 },
+    children: actions
+      ? jsxs('div', { className: 'min-w-0 space-y-2', children: [result, actions] })
+      : jsxs('div', {
+          className: 'flex min-w-0 items-start gap-3',
+          children: [
+            jsx('div', { className: 'min-w-0 flex-1', children: result }),
+            jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => mutation.reset(), children: 'Dismiss' })
+          ]
+        })
+  })
+}
+
+function SettingsSection() {
+  const layout = useLayout()
+  const focus = useFocusScope()
+  const snapshot = useHonchoSnapshot()
+  const query = useHonchoEndpoint('/session-settings', [], {}, { staleTime: 15_000 })
+  const client = useQueryClient()
+  const [draft, setDraft] = useState(EMPTY_SETTINGS_DRAFT)
+  const [attempted, setAttempted] = useState([])
+  const inFlight = useRef(false)
+  const data = query.data
+  const changes = settingsChanges(data, draft)
+  const target = data ? { workspace_id: data.workspace_id, session_id: data.session_id } : null
+  const mutation = useMutation({
+    retry: false,
+    mutationFn: ({ revision, reviewed }) => saveSessionSettingsForFocus({ ...focus, backendProfile: snapshot.data?.profile }, target, revision, reviewed),
+    onSuccess: () => setDraft(EMPTY_SETTINGS_DRAFT),
+    onSettled: () => {
+      inFlight.current = false
+      client.invalidateQueries({ queryKey: [PLUGIN_ID] })
+    }
+  })
+  const pending = mutation.isPending
+  const change = (kind, key, next, base) => {
+    if (inFlight.current) return
+    mutation.reset()
+    setDraft(current => {
+      if (kind === 'learning') {
+        const learning = { ...current.learning }
+        if (next === base) delete learning[key]
+        else learning[key] = next
+        return { ...current, learning }
+      }
+      const [peerId, field] = key.split('\u0000')
+      const peer = { ...current.observation[peerId] }
+      if (next === base) delete peer[field]
+      else peer[field] = next
+      const observation = { ...current.observation, [peerId]: peer }
+      if (!Object.keys(peer).length) delete observation[peerId]
+      return { ...current, observation }
+    })
+  }
+  const save = () => {
+    if (inFlight.current || !changes.length || !data?.revision || focus.routeMismatch) return
+    inFlight.current = true
+    setAttempted(changes)
+    mutation.mutate({ revision: data.revision, reviewed: changes })
+  }
+  const discard = () => {
+    if (inFlight.current) return
+    mutation.reset()
+    setDraft(EMPTY_SETTINGS_DRAFT)
+  }
+
+  if (!data) return jsx(QueryState, { query, children: null })
+  const session = text(data.session_id)
+  const locked = sharedSettingsReason(data)
+  const groups = [
+    jsx(LearningSettings, { data, draft, onChange: change, disabled: pending }, 'learning'),
+    jsx(ObservationSettings, { data, draft, onChange: change, disabled: pending }, 'observation')
+  ]
+  return jsx(QueryState, {
+    query,
+    children: jsxs('div', {
+      className: 'min-w-0 space-y-5',
+      children: [
+        jsxs('p', {
+          className: 'text-xs leading-5 text-(--ui-text-secondary)',
+          style: PROSE,
+          children: ['These settings apply to new messages saved to ', code(session), ', from every Hermes chat mapped to it. Memory Honcho already has stays, and other sessions can still recall it.']
+        }),
+        locked ? jsx(StateLine, { tone: 'warn', title: 'Read-only on this server', children: locked }) : null,
+        layout === 'wide'
+          ? jsx('div', { style: { display: 'grid', gap: 32, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', alignItems: 'start' }, children: groups })
+          : jsx('div', { className: 'min-w-0 space-y-5', children: groups }),
+        data.queue ? jsx('p', { className: 'text-xs leading-5 text-(--ui-text-secondary)', style: PROSE, children: queueSummary(data.queue) }) : null,
+        jsx(SettingsReview, { changes, target, profile: snapshot.data?.profile || focus.ownerProfile }),
+        jsx(SettingsActionBar, {
+          changes,
+          attempted,
+          session,
+          mutation,
+          onDiscard: discard,
+          onSave: save,
+          blocked: pending || !data.revision || focus.routeMismatch || query.isFetching
+        })
+      ]
+    })
+  })
+}
+
 // ── Status ──────────────────────────────────────────────────────────────────
 
 function StatusSection() {
@@ -2894,6 +3336,7 @@ function SectionBody({ snapshot }) {
   if (active === 'ask') return jsx(AskSection, {})
   if (active === 'messages') return jsx(MessagesSection, {})
   if (active === 'context') return jsx(ContextSection, {})
+  if (active === 'settings') return jsx(SettingsSection, {})
   return jsx(MemorySection, {})
 }
 

@@ -62,7 +62,7 @@ function useTransport(handler = async () => ({ ok: true })) {
 
 test('memory is the landing section and operational status is secondary', () => {
   assert.equal(vm.runInContext('$activeTab.get()', sandbox), 'memory')
-  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(SECTIONS.map(section => section.id))', sandbox)), ['memory', 'ask', 'messages', 'context', 'status'])
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(SECTIONS.map(section => section.id))', sandbox)), ['memory', 'ask', 'messages', 'context', 'settings', 'status'])
   assert.equal(typeof sandbox.MemorySection, 'function')
   assert.equal(typeof sandbox.AskSection, 'function')
 })
@@ -652,4 +652,177 @@ test('ticket must match the session and peer shown when the user confirmed', asy
     await assert.rejects(mutation.mutationFn(), /target changed/)
     assert.equal(calls.length, 1, 'mismatched ticket must not dispatch file content')
   }
+})
+
+// ── Session settings ────────────────────────────────────────────────────────
+const settingsData = () => ({
+  ok: true, errors: [], workspace_id: 'w', session_id: 's', revision: 'a'.repeat(64), user_peer: 'human', ai_peer: 'agent',
+  capabilities: { learning: true, observation: true }, reasons: {},
+  learning: [
+    { key: 'reasoning', choice: 'inherit', session: null, legacy: false, workspace: null, effective: null, source: 'server' },
+    { key: 'summary', choice: 'off', session: false, legacy: false, workspace: null, effective: false, source: 'session' },
+    { key: 'dream', choice: 'inherit', session: null, legacy: false, workspace: false, effective: false, source: 'workspace' },
+    { key: 'peer_card', choice: 'inherit', session: null, legacy: false, workspace: null, effective: null, source: 'server' }
+  ],
+  peers: [
+    { id: 'human', role: 'user', observe_me: true, observe_others: null, peer_observe_me: null, effective_observe_me: true, observe_me_source: 'session', effective_observe_others: false, observe_others_source: 'unset' },
+    { id: 'agent', role: 'ai', observe_me: null, observe_others: true, peer_observe_me: true, effective_observe_me: true, observe_me_source: 'peer', effective_observe_others: true, observe_others_source: 'session' }
+  ],
+  queue: { pending: 0, in_progress: 0 }
+})
+const settingsTarget = { workspace_id: 'w', session_id: 's' }
+
+test('settings changes are exact diffs against what Honcho returned', () => {
+  const data = settingsData()
+  const draft = { learning: { reasoning: 'off', summary: 'off', dream: 'inherit' }, observation: { human: { observe_others: 'on' }, agent: { observe_me: 'off' } } }
+  const changes = sandbox.settingsChanges(data, draft)
+  assert.deepEqual(JSON.parse(JSON.stringify(changes.map(change => [change.id, change.from, change.to]))), [
+    ['learning.reasoning', 'inherit', 'off'],
+    ['observation.human.observe_others', 'unset', 'on'],
+    ['observation.agent.observe_me', 'unset', 'off']
+  ])
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox.settingsRequestBody(changes))), {
+    learning: { reasoning: 'off' },
+    observation: { human: { observe_others: 'on' }, agent: { observe_me: 'off' } }
+  })
+  assert.equal(sandbox.settingsChanges(undefined, { learning: {}, observation: {} }).length, 0)
+})
+
+test('an unset peer setting shows the value in effect, and choosing it is not a change', () => {
+  const [human, agent] = settingsData().peers
+  assert.equal(sandbox.observationBase(human, 'observe_others'), 'off')
+  assert.equal(sandbox.observationBase(agent, 'observe_me'), 'on')
+  assert.equal(sandbox.observationStatus(human, 'observe_others'), 'Off · not set')
+  assert.equal(sandbox.observationStatus(agent, 'observe_me'), 'On · from the peer’s own setting')
+})
+
+test('dreams and peer card updates say when conclusions are off', () => {
+  const data = settingsData()
+  assert.equal(sandbox.conclusionsOff(data, { learning: {}, observation: {} }), false)
+  assert.equal(sandbox.conclusionsOff(data, { learning: { reasoning: 'off' }, observation: {} }), true)
+  data.learning[0] = { ...data.learning[0], workspace: false }
+  assert.equal(sandbox.conclusionsOff(data, { learning: {}, observation: {} }), true)
+  assert.equal(sandbox.conclusionsOff(data, { learning: { reasoning: 'on' }, observation: {} }), false)
+  withHooks('wide')
+  const shown = deepText(sandbox.LearningSettings({ data, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false }))
+  assert.match(shown, /Skipped while conclusions are off\./)
+  assert.match(shown, /Server default/)
+  assert.match(shown, /Off · from the workspace/)
+  assert.match(shown, /A dream started from another session can still use this session’s conclusions\./)
+})
+
+test('the Hermes peer explains that its view picks what Hermes recalls', () => {
+  withHooks('narrow')
+  const data = settingsData()
+  const shown = deepText(sandbox.ObservationSettings({ data, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false }))
+  assert.match(shown, /Hermes recalls through this view\. Turned off, Hermes reads human’s own memory/)
+  assert.equal((shown.match(/Hermes recalls through this view/g) || []).length, 1, 'only the Hermes peer carries the note')
+})
+
+test('unsupported servers keep settings readable but every control disabled', () => {
+  withHooks('wide')
+  const data = { ...settingsData(), capabilities: { learning: false, observation: false }, reasons: { learning: 'Needs Honcho 3.0.0.', observation: 'Needs Honcho 3.1.0.' } }
+  const controls = []
+  const collect = node => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.type === 'SegmentedControl') controls.push(node.props)
+    if (typeof node.type === 'function') return collect(node.type(node.props))
+    collect(node.props?.children)
+  }
+  collect(sandbox.LearningSettings({ data, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false }))
+  collect(sandbox.ObservationSettings({ data, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false }))
+  assert.equal(controls.length, 8)
+  assert.ok(controls.every(props => props.disabled === true))
+  assert.match(deepText(sandbox.LearningSettings({ data, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false })), /Needs Honcho 3\.0\.0\./)
+  // One reason for both groups is shown once, above them, not twice.
+  const same = { ...data, reasons: { learning: 'Needs Honcho 3.0.0.', observation: 'Needs Honcho 3.0.0.' } }
+  assert.equal(sandbox.sharedSettingsReason(same), 'Needs Honcho 3.0.0.')
+  assert.doesNotMatch(deepText(sandbox.LearningSettings({ data: same, draft: { learning: {}, observation: {} }, onChange() {}, disabled: false })), /Needs Honcho/)
+  assert.equal(sandbox.sharedSettingsReason(settingsData()), null)
+})
+
+test('saving sends the reviewed revision and verifies every change', async () => {
+  const focus = setLiveFocus({ connectionId: 'local', focusedSessionOwner: { connectionId: 'local', profile: 'remote-alias' } })
+  const changes = sandbox.settingsChanges(settingsData(), { learning: { reasoning: 'off' }, observation: { agent: { observe_others: 'off' } } })
+  const ids = changes.map(change => change.id)
+  const calls = useTransport(async path => path.startsWith('/session-settings-ticket')
+    ? { ok: true, ticket: 'one-time', target: settingsTarget, changes: ids.map(id => ({ id })) }
+    : { ok: true, verified: true, outcome: 'verified', target: settingsTarget, changes: ids.map(id => ({ id, status: 'verified' })) })
+  await sandbox.saveSessionSettingsForFocus(focus, settingsTarget, 'a'.repeat(64), changes)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].options.body.revision, 'a'.repeat(64))
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].options.body.observation)), { agent: { observe_others: 'off' } })
+  assert.equal(calls[1].options.body.ticket, 'one-time')
+  assert.equal(calls[1].options.body.learning, undefined, 'the write carries only the ticket')
+})
+
+test('a ticket for another session or other changes stops before the write', async () => {
+  const focus = setLiveFocus({ connectionId: 'local', focusedSessionOwner: { connectionId: 'local', profile: 'remote-alias' } })
+  const changes = sandbox.settingsChanges(settingsData(), { learning: { reasoning: 'off' }, observation: {} })
+  for (const ticket of [
+    { ok: true, ticket: 't', target: { ...settingsTarget, session_id: 'other' }, changes: [{ id: 'learning.reasoning' }] },
+    { ok: true, ticket: 't', target: settingsTarget, changes: [{ id: 'learning.reasoning' }, { id: 'learning.summary' }] },
+    { ok: false, state: 'stale', errors: [{ scope: 'settings.workspace', message: 'Synthetic 403' }, { scope: 'settings', message: 'These settings changed after you opened them.' }] }
+  ]) {
+    const calls = useTransport(async () => ticket)
+    await assert.rejects(sandbox.saveSessionSettingsForFocus(focus, settingsTarget, 'a'.repeat(64), changes), error => {
+      assert.equal(error.outcome, 'rejected')
+      if (!ticket.ok) assert.match(error.message, /changed after you opened them/)
+      return true
+    })
+    assert.equal(calls.length, 1)
+  }
+})
+
+test('partial, unconfirmed and lost saves are never reported as saved', async () => {
+  const focus = setLiveFocus({ connectionId: 'local', focusedSessionOwner: { connectionId: 'local', profile: 'remote-alias' } })
+  const changes = sandbox.settingsChanges(settingsData(), { learning: { reasoning: 'off' }, observation: { agent: { observe_others: 'off' } } })
+  const ticket = { ok: true, ticket: 't', target: settingsTarget, changes: changes.map(change => ({ id: change.id })) }
+  const partial = { ok: false, verified: false, outcome: 'partial', target: settingsTarget, changes: [{ id: changes[0].id, status: 'verified' }, { id: changes[1].id, status: 'not_applied' }], errors: [{ scope: 'settings.save', message: 'Synthetic observer limit' }] }
+  useTransport(async path => path.startsWith('/session-settings-ticket') ? ticket : partial)
+  await assert.rejects(sandbox.saveSessionSettingsForFocus(focus, settingsTarget, 'a'.repeat(64), changes), error => {
+    assert.equal(error.outcome, 'partial')
+    assert.equal(error.changes.length, 2)
+    assert.equal(error.detail, 'Synthetic observer limit')
+    return true
+  })
+  // Verified flag without a per-change verification is not success.
+  useTransport(async path => path.startsWith('/session-settings-ticket') ? ticket : { ok: true, verified: true, outcome: 'verified', target: settingsTarget, changes: [] })
+  await assert.rejects(sandbox.saveSessionSettingsForFocus(focus, settingsTarget, 'a'.repeat(64), changes), error => error.outcome === 'unknown')
+  let writes = 0
+  useTransport(async path => {
+    if (path.startsWith('/session-settings-ticket')) return ticket
+    writes++
+    throw new Error('Transport lost')
+  })
+  await assert.rejects(sandbox.saveSessionSettingsForFocus(focus, settingsTarget, 'a'.repeat(64), changes), error => error.outcome === 'unknown' && /may be saved/.test(error.message))
+  assert.equal(writes, 1)
+})
+
+test('the queue line says queued work keeps its old settings', () => {
+  assert.equal(sandbox.queueSummary({ pending: 0, in_progress: 0 }), 'Nothing is queued for this session.')
+  assert.equal(sandbox.queueSummary({ pending: 3, in_progress: 1 }), 'Queued for this session: 1 running, 3 waiting. Queued work keeps the settings it had when it was queued.')
+  assert.equal(sandbox.queueSummary({ pending: 0, in_progress: 1 }), 'Queued for this session: 1 running. Queued work keeps the settings it had when it was queued.')
+  assert.equal(sandbox.queueSummary(null), null)
+})
+
+test('the action bar keeps Save in view and shows every outcome', () => {
+  withHooks('wide')
+  const changes = sandbox.settingsChanges(settingsData(), { learning: { reasoning: 'off' }, observation: { agent: { observe_others: 'off' } } })
+  const bar = mutation => deepText(sandbox.SettingsActionBar({ changes: mutation.changes ?? changes, attempted: changes, session: 's', mutation, onDiscard() {}, onSave() {}, blocked: false }))
+  assert.equal(sandbox.SettingsActionBar({ changes: [], attempted: [], session: 's', mutation: {}, onDiscard() {}, onSave() {}, blocked: false }), null)
+  const pendingTree = sandbox.SettingsActionBar({ changes, attempted: changes, session: 's', mutation: {}, onDiscard() {}, onSave() {}, blocked: false })
+  assert.equal(pendingTree.props.style.position, 'sticky')
+  assert.match(bar({}), /2 unsaved changes to/)
+  assert.match(bar({}), /Save 2 changes/)
+  assert.match(bar({ isPending: true }), /Saving 2 changes to/)
+  assert.match(bar({ changes: [], data: { changes: [{}, {}] } }), /Saved and verified .* 2 changes/)
+  assert.match(bar({ changes: [], data: { changes: [{}] } }), /Dismiss/)
+  const partial = bar({ error: Object.assign(new Error('Some changes were saved and some weren’t.'), { outcome: 'partial', detail: 'Synthetic observer limit', changes: [{ id: changes[0].id, status: 'verified' }, { id: changes[1].id, status: 'not_applied' }] }) })
+  assert.match(partial, /Partly saved/)
+  assert.match(partial, /Conclusions Inherit → Off Saved/)
+  assert.match(partial, /agent: Build a view of others On → Off Not saved/)
+  assert.match(partial, /Save 2 changes/, 'unsaved changes stay available to retry after a refresh')
+  assert.match(bar({ error: Object.assign(new Error('Lost.'), { outcome: 'unknown' }) }), /Outcome unknown/)
 })

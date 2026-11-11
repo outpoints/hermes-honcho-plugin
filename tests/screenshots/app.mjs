@@ -29,6 +29,11 @@ plugin.register({
     if (window.demoScenario === 'unsupported' && path.startsWith('/capabilities')) return { ok: true, state: 'connected', errors: [], capabilities: { conclusion_search: false, conclusion_detail: false, ask: false, correction: false, ask_evidence: false }, reasons: { conclusion_search: 'Synthetic SDK cannot search conclusions.', conclusion_detail: 'Synthetic SDK cannot inspect provenance.', ask: 'Synthetic SDK cannot ask memory.', correction: 'Synthetic SDK cannot verify corrections.', ask_evidence: 'Synthetic SDK has no evidence.' } }
     // A Honcho server older than 3.3.0: the backend reports no instructions.
     if (window.demoScenario === 'unsupported' && path.startsWith('/instructions')) return { ok: true, state: 'connected', errors: [], capabilities: { instructions: false }, reason: 'Custom instructions need Honcho 3.3.0 or later. This server runs 3.2.2.', agents: [], configured: false }
+    // A Honcho server older than 3.0.0: settings stay readable but locked.
+    if (window.demoScenario === 'unsupported' && path.startsWith('/session-settings')) {
+      const settings = await fixtureTransport(path, options)
+      return { ...settings, server_version: '2.5.0', capabilities: { learning: false, observation: false }, reasons: { learning: 'Changing these needs Honcho 3.0.0 or later. This server runs 2.5.0.', observation: 'Changing these needs Honcho 3.0.0 or later. This server runs 2.5.0.' } }
+    }
     if (window.demoScenario === 'unknown-correction' && path.startsWith('/corrections')) return { ok: false, verified: false, outcome: 'unknown', state: 'unknown', errors: [{ scope: 'correction', message: 'Synthetic response lost. Inspect memory before retrying.' }] }
     return fixtureTransport(path, options)
   },

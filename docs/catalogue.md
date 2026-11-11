@@ -11,7 +11,7 @@ It does not verify unpublished image URLs.
 ## What is prepared
 
 - Matching plugin manifest, dashboard manifest, backend and entry version:
-  **0.5.0**. A contract test keeps all four in agreement.
+  **0.6.0**. A contract test keeps all four in agreement.
 - `requires_hermes: ">=0.21.4"`, a SemVer floor derived from the host APIs the
   plugin uses. See [compatibility.md](compatibility.md).
 - SDK-only runtime ESM and host-owned authenticated transport. No self-updater,
@@ -66,7 +66,10 @@ Disclosure:
 - Reads outside its own data: the focused chat's title and working directory
   from the profile's session database, read-only.
 - Writes: an additive conclusion or session messages, each only after explicit
-  confirmation, with exact readback. No automatic retries.
+  confirmation, with exact readback. Session settings (the focused session's
+  learning switches and its peers' observation) only after the user reviews
+  the changes and presses Save, with a revision check and readback of every
+  value. No automatic retries.
 - Usage: Ask runs a Honcho reasoning call, only when the user submits it.
 - Credentials: never read, returned or stored by the plugin.
 - Artwork: AI-generated drawings of the Nous Girl, made with the MIT

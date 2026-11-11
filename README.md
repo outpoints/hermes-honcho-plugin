@@ -36,6 +36,9 @@ reachable and whether background reasoning is still running.
   uses, or at the largest preview when Hermes sets none. If the stored summary
   doesn't fit the budget, it says so. This is a fresh build, not a record of
   what an earlier reply received.
+- **Settings**: what Honcho learns from new messages in this session. Each
+  setting shows its value and where that value comes from: this session, the
+  workspace, or the server default. See [Session settings](#session-settings).
 - **Status**: the connection, profile, Honcho session, mapping, configuration,
   and background-reasoning queues for this chat.
 
@@ -43,9 +46,40 @@ A Honcho session can span several Hermes chats, for example when sessions are
 mapped per repository. The header shows the connection, profile, Honcho session,
 and peer, so it is always clear whose memory you are reading.
 
+## Session settings
+
+Honcho can stop learning from one session without touching the rest of the
+workspace. The **Settings** tab changes these for the focused chat's Honcho
+session:
+
+- **Conclusions**, **Summaries**, **Dreams**, and **Peer card updates**, each set
+  to Inherit, On, or Off. Inherit uses the workspace's setting, then the
+  server's default. With conclusions off, Honcho also skips dreams and peer card
+  updates for the session.
+- For each peer in the session: whether Honcho learns from that peer's
+  messages, and whether the peer builds its own view of the others. Hermes
+  recalls through its own peer's view. If you turn that view off, Hermes reads
+  the user's own memory for the session the next time it opens it.
+
+Changes are listed for review and saved together. The plugin checks that
+nothing changed since you opened the tab, writes each change once, and reads
+every value back before saying it saved.
+
+What these settings don't do:
+
+- They apply to messages saved after the change. Memory Honcho already has
+  stays, and other sessions can still recall it. Work already queued for the
+  session keeps the settings it was queued with.
+- They apply to the whole Honcho session, so every Hermes chat mapped to it.
+- Dreams combine conclusions from every session. A dream started from another
+  session can still use this session's conclusions.
+
+Changing them needs Honcho 3.0.0 or newer. On older servers, or when the
+plugin can't confirm the server's version, they are shown read-only.
+
 ## Changing memory
 
-Two actions write to Honcho. Both ask you to confirm the exact target first.
+Three actions write to Honcho. Each asks you to confirm the exact target first.
 
 - **Add fact** and **Add correction** add one explicit conclusion about the
   user, attributed to the current Honcho session. Nothing is deleted or
@@ -54,9 +88,11 @@ Two actions write to Honcho. Both ask you to confirm the exact target first.
 - **Add to session** sends pasted text or a PDF, JSON, or text file into the
   current session. Honcho may split it into several messages, and each one is
   read back by ID.
+- **Save** in Settings changes what Honcho learns from the session. See
+  [Session settings](#session-settings).
 
 If a response is lost, the outcome is reported as unknown and the action is not
-retried. Check Memory or Messages before trying again.
+retried. Check Memory, Messages, or Settings before trying again.
 
 ## Profiles and connections
 
@@ -80,8 +116,8 @@ is installed on the remote profile. See [Windows and SSH testing](docs/windows-s
   hermes memory setup honcho
   ```
 
-- A Honcho 3 server. Read-only live checks have passed against 3.2.0, 3.3.0
-  and 3.4.1.
+- A Honcho 3 server. Read-only live checks have passed against 3.2.0, 3.3.0,
+  3.4.1 and 3.5.0. Changing session settings needs 3.0.0 or newer.
 - The Python `honcho-ai` SDK that the provider installs. The plugin is tested
   with 2.2.0, 2.4.0, 2.5.0, 2.5.1, 2.6.0, and 2.7.0. Premises, derived
   conclusions, and the records list in Ask need SDK 2.5 and a Honcho 3.2 or
@@ -117,7 +153,7 @@ Restart Hermes after installing so each profile's backend loads the plugin. If
 - Reads never create Honcho workspaces, sessions, peers, or scopes.
 - **Ask** starts a reasoning call on your Honcho server, which may use credits.
   Nothing runs until you ask.
-- Writes happen only through the two confirmed actions above.
+- Writes happen only through the three confirmed actions above.
 
 ## Limits
 

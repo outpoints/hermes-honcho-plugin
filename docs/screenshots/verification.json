@@ -1,7 +1,7 @@
 {
   "synthetic": true,
-  "host_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
-  "plugin_sha256": "097b86aad52992d74e800ddcdea9384b3f7e50f192926987296642a72b089e19",
+  "host_commit": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
+  "plugin_sha256": "0bc84c41fcc51478dd38133162d9be8b381fd3eb227f8f44689a6397814bb835",
   "captures": [
     {
       "file": "memory-dark.png",
@@ -32,6 +32,21 @@
       "file": "diagnostics.png",
       "width": 2400,
       "height": 1600
+    },
+    {
+      "file": "settings.png",
+      "width": 2400,
+      "height": 2000
+    },
+    {
+      "file": "settings-review.png",
+      "width": 2400,
+      "height": 2000
+    },
+    {
+      "file": "settings-saved.png",
+      "width": 2400,
+      "height": 2000
     },
     {
       "file": "context-summary-budget.png",
@@ -93,6 +108,11 @@
       "height": 1600
     },
     {
+      "file": "settings-light.png",
+      "width": 2400,
+      "height": 2000
+    },
+    {
       "file": "status-light.png",
       "width": 2400,
       "height": 1600
@@ -118,6 +138,11 @@
       "height": 2200
     },
     {
+      "file": "settings-pane.png",
+      "width": 760,
+      "height": 3400
+    },
+    {
       "file": "memory-narrow-light.png",
       "width": 760,
       "height": 2200
@@ -131,6 +156,11 @@
       "file": "unsupported.png",
       "width": 2400,
       "height": 1600
+    },
+    {
+      "file": "settings-unsupported.png",
+      "width": 2400,
+      "height": 2000
     },
     {
       "file": "unknown-correction.png",
@@ -164,6 +194,18 @@
     },
     {
       "name": "status",
+      "violations": []
+    },
+    {
+      "name": "settings",
+      "violations": []
+    },
+    {
+      "name": "settings-review",
+      "violations": []
+    },
+    {
+      "name": "settings-saved",
       "violations": []
     },
     {
@@ -203,6 +245,10 @@
       "violations": []
     },
     {
+      "name": "settings-light",
+      "violations": []
+    },
+    {
       "name": "status-light",
       "violations": []
     },
@@ -211,7 +257,15 @@
       "violations": []
     },
     {
+      "name": "settings-pane",
+      "violations": []
+    },
+    {
       "name": "memory-narrow-light",
+      "violations": []
+    },
+    {
+      "name": "settings-unsupported",
       "violations": []
     },
     {
@@ -239,16 +293,29 @@
     "wide, pane, and inspector layouts in light and dark",
     "unsupported capabilities",
     "unknown write without retry",
-    "pending write dismissal and duplicate-submit guard",
-    "focus change suppresses stale answers and prevents confirmed write",
     "another local profile reads in its owner profile",
     "draft chat without a session",
     "disconnected state",
-    "pane focus handoff retains inspected tile",
-    "portalled menu preserves inspection target",
-    "host sidebar navigation preserves inspection target without reading host markup",
     "stored summary shown when the preview budget is too small",
     "custom instructions on wide and pane layouts and under Ask",
-    "no instructions on servers before 3.3.0"
-  ]
+    "no instructions on servers before 3.3.0",
+    "session settings show each value and its source",
+    "changing a setting control writes nothing until Save",
+    "moving a control back removes it from the review",
+    "session settings save once on a double click and read back as verified",
+    "session settings on the narrow pane and in light theme",
+    "discarding settings changes writes nothing",
+    "settings locked on servers before 3.0.0"
+  ],
+  "skipped": {
+    "steps": [
+      "pending write dismissal and duplicate-submit guard",
+      "focus change suppresses stale answers and prevents confirmed write",
+      "pane focus handoff retains inspected tile",
+      "portalled menu preserves inspection target",
+      "host sidebar navigation preserves inspection target without reading host markup"
+    ],
+    "reason": "On this host build these steps time out at HEAD before this release too: changing host focus after an in-plugin click does not reach the plugin in the isolated harness. They capture no images. Not yet diagnosed.",
+    "last_passed_host_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
+  }
 }

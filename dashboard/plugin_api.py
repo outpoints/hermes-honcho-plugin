@@ -1,12 +1,14 @@
-"""Profile-aware, read-only Honcho metrics for the Hermes desktop plugin."""
+"""Profile-aware Honcho reads, and confirmed writes, for the Hermes desktop plugin."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import datetime as dt
+import hashlib
 import importlib.metadata
 import inspect
+import json
 import re
 import secrets
 import threading
@@ -19,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 router = APIRouter()
 
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.6.0"
 REQUEST_TIMEOUT_SECONDS = 20
 UPLOAD_TIMEOUT_SECONDS = 120
 UPLOAD_TICKET_TTL_SECONDS = 120
@@ -28,6 +30,7 @@ SUPPORTED_UPLOAD_TYPES = {"application/json", "application/pdf"}
 _upload_ticket_lock = threading.Lock()
 _upload_tickets: dict[str, dict[str, Any]] = {}
 _correction_tickets: dict[str, dict[str, Any]] = {}
+_settings_tickets: dict[str, dict[str, Any]] = {}
 
 
 def _store_upload_ticket(payload: dict[str, Any]) -> str:
@@ -167,6 +170,47 @@ class ActivityRequest(SnapshotRequest):
 
 class InstructionsRequest(SnapshotRequest):
     """Custom instructions in effect for the focused Honcho session."""
+
+
+class SessionSettingsRequest(SnapshotRequest):
+    """What Honcho learns from new messages in the focused Honcho session."""
+
+
+# Honcho resource names (RESOURCE_NAME_PATTERN in its API schemas).
+PEER_ID_PATTERN = r"^[A-Za-z0-9_-]{1,512}$"
+MAX_SETTINGS_PEERS = 20
+
+
+class PeerObservationChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observe_me: Literal["on", "off"] | None = None
+    observe_others: Literal["on", "off"] | None = None
+
+
+class SessionSettingsTicketRequest(SnapshotRequest):
+    """Changes the user reviewed, bound to the settings revision they saw."""
+
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    learning: dict[Literal["reasoning", "summary", "dream", "peer_card"], Literal["inherit", "on", "off"]] = Field(default_factory=dict)
+    observation: dict[str, PeerObservationChange] = Field(default_factory=dict, max_length=MAX_SETTINGS_PEERS)
+
+    @field_validator("observation")
+    @classmethod
+    def valid_peer_changes(cls, value: dict[str, PeerObservationChange]) -> dict[str, PeerObservationChange]:
+        for peer_id, change in value.items():
+            if not re.fullmatch(PEER_ID_PATTERN, peer_id):
+                raise ValueError("Peer IDs contain only letters, digits, hyphens and underscores.")
+            if change.observe_me is None and change.observe_others is None:
+                raise ValueError("Each peer change must set observe_me or observe_others.")
+        return value
+
+    def has_changes(self) -> bool:
+        return bool(self.learning or self.observation)
+
+
+class SessionSettingsSaveRequest(SnapshotRequest):
+    ticket: str = Field(min_length=1, max_length=128)
 
 
 class UploadTicketRequest(SnapshotRequest):
@@ -1734,7 +1778,7 @@ def _collect_conclusions(
     return result
 
 
-def _workbench_target(request: SnapshotRequest, **factories: Any) -> tuple:
+def _isolated_client_factory(factories: dict[str, Any]) -> Callable[[Any], Any]:
     factory = factories.get("client_factory")
     if factory is None:
         factory = _honcho_client_module().get_honcho_client
@@ -1748,9 +1792,13 @@ def _workbench_target(request: SnapshotRequest, **factories: Any) -> tuple:
         client._http.timeout = 15
         return client
 
+    return isolated_client
+
+
+def _workbench_target(request: SnapshotRequest, **factories: Any) -> tuple:
     result, config, client, session = _prepare_read(
         request, config_factory=factories.get("config_factory"),
-        client_factory=isolated_client,
+        client_factory=_isolated_client_factory(factories),
         session_metadata_loader=factories.get("session_metadata_loader"),
     )
     observer = scope = None
@@ -2150,6 +2198,484 @@ def _collect_instructions(request: InstructionsRequest, **factories: Any) -> dic
     return result
 
 
+# ── Session settings ─────────────────────────────────────────────────────────
+# Honcho resolves each switch per message: message, then session, then
+# workspace, then the server's defaults (get_configuration() in
+# src/utils/config_helpers.py). The switches gate what the deriver, summarizer
+# and dreamer write from new messages. They never hide stored memory.
+#
+# A session update merges top-level keys only. Sending {"reasoning": {...}}
+# replaces the whole stored `reasoning` section, so every write rebuilds a
+# section from the values the server just returned, changing one field.
+LEARNING_FIELDS = {
+    "reasoning": ("reasoning", "enabled"),
+    "summary": ("summary", "enabled"),
+    "dream": ("dream", "enabled"),
+    "peer_card": ("peer_card", "create"),
+}
+# 3.0.0 renamed the session's `deriver` section to `reasoning`. The session-peer
+# semantics this relies on are older: adding an active member again keeps its
+# stored settings (Hermes adds both peers every time it opens a session), and
+# a session-peer update merges the fields it is sent.
+SETTINGS_MIN_SERVER = (3, 0, 0)
+# Honcho's own members that back a scope. Their settings belong to Honcho.
+SCOPE_PEER_PREFIX = "scope."
+SETTINGS_TICKET_TTL_SECONDS = 120
+
+
+def _settings_transport(client: Any) -> Any:
+    http = getattr(client, "_http", None)
+    if not all(callable(getattr(http, name, None)) for name in ("get", "post", "put")):
+        raise RuntimeError("Installed honcho-ai has no transport for session settings.")
+    return http
+
+
+def _session_root(client: Any, session_id: str) -> str:
+    workspace_id = _clean(getattr(client, "workspace_id", None))
+    if not workspace_id:
+        raise RuntimeError("The Honcho client has no workspace.")
+    return f"/v3/workspaces/{quote(workspace_id, safe='')}/sessions/{quote(session_id, safe='')}"
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _choice(value: bool | None, unset: str) -> str:
+    return unset if value is None else "on" if value else "off"
+
+
+def _configuration_dict(value: Any, what: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Honcho returned a malformed {what} configuration.")
+    return value
+
+
+def _explicit_learning(configuration: dict[str, Any]) -> dict[str, bool | None]:
+    """The switches this plugin writes, exactly as stored on one level."""
+
+    values: dict[str, bool | None] = {}
+    for key, (section, field) in LEARNING_FIELDS.items():
+        part = configuration.get(section)
+        values[key] = _optional_bool(part.get(field)) if isinstance(part, dict) else None
+    return values
+
+
+def _effective_learning(configuration: dict[str, Any]) -> dict[str, bool | None]:
+    """One level's switches as Honcho reads them.
+
+    Mirrors normalize_configuration_dict(): an explicit reasoning.enabled wins,
+    then the legacy deriver.enabled, then a legacy skip_deriver of true.
+    """
+
+    values = _explicit_learning(configuration)
+    if values["reasoning"] is None:
+        legacy = configuration.get("deriver")
+        if isinstance(legacy, dict) and isinstance(legacy.get("enabled"), bool):
+            values["reasoning"] = legacy["enabled"]
+        elif configuration.get("skip_deriver") is True:
+            values["reasoning"] = False
+    return values
+
+
+def _learning_payload(session_configuration: dict[str, Any], workspace: dict[str, bool | None] | None) -> list[dict[str, Any]]:
+    explicit = _explicit_learning(session_configuration)
+    session = _effective_learning(session_configuration)
+    rows = []
+    for key in LEARNING_FIELDS:
+        workspace_value = None if workspace is None else workspace[key]
+        if session[key] is not None:
+            effective, source = session[key], "session"
+        elif workspace is None:
+            effective, source = None, "unknown"
+        elif workspace_value is not None:
+            effective, source = workspace_value, "workspace"
+        else:
+            # Honcho ships with every switch on, but an operator can change
+            # the server's defaults, and the API does not report them.
+            effective, source = None, "server"
+        rows.append({
+            "key": key,
+            "choice": _choice(explicit[key], "inherit"),
+            "session": explicit[key],
+            # An older setting on this session still decides the value.
+            "legacy": explicit[key] is None and session[key] is not None,
+            "workspace": workspace_value,
+            "effective": effective,
+            "source": source,
+        })
+    return rows
+
+
+def _read_settings_peers(http: Any, root: str, config: Any) -> tuple[list[dict[str, Any]], bool]:
+    page = http.get(f"{root}/peers")
+    items = page.get("items") if isinstance(page, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError("Honcho returned a malformed session peer list.")
+    members: dict[str, bool | None] = {}
+    for item in items:
+        peer_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(peer_id, str):
+            raise RuntimeError("Honcho returned a malformed session peer.")
+        if peer_id.startswith(SCOPE_PEER_PREFIX):
+            continue
+        if not re.fullmatch(PEER_ID_PATTERN, peer_id):
+            raise RuntimeError("Honcho returned a session peer with an unexpected ID.")
+        peer_configuration = item.get("configuration")
+        members[peer_id] = _optional_bool(peer_configuration.get("observe_me")) if isinstance(peer_configuration, dict) else None
+
+    user_peer, ai_peer = getattr(config, "peer_name", None), getattr(config, "ai_peer", None)
+    ordered = sorted(members, key=lambda peer: (peer != user_peer, peer != ai_peer, peer))
+    total = page.get("total")
+    truncated = len(ordered) > MAX_SETTINGS_PEERS or (type(total) is int and total > len(items))
+    peers = []
+    for peer_id in ordered[:MAX_SETTINGS_PEERS]:
+        stored = http.get(f"{root}/peers/{quote(peer_id, safe='')}/config")
+        if not isinstance(stored, dict):
+            raise RuntimeError("Honcho returned a malformed session peer configuration.")
+        observe_me, observe_others = _optional_bool(stored.get("observe_me")), _optional_bool(stored.get("observe_others"))
+        peer_observe_me = members[peer_id]
+        peers.append({
+            "id": peer_id,
+            "role": "user" if peer_id == user_peer else "ai" if peer_id == ai_peer else "peer",
+            "observe_me": observe_me,
+            "observe_others": observe_others,
+            "peer_observe_me": peer_observe_me,
+            # get_effective_observe_me(): the session's value, then the
+            # peer's own, then on.
+            "effective_observe_me": observe_me if observe_me is not None else peer_observe_me if peer_observe_me is not None else True,
+            "observe_me_source": "session" if observe_me is not None else "peer" if peer_observe_me is not None else "default",
+            # Unset means off: Honcho adds a peer as an observer only when
+            # its session value is true.
+            "effective_observe_others": observe_others is True,
+            "observe_others_source": "session" if observe_others is not None else "unset",
+        })
+    return peers, truncated
+
+
+def _settings_revision(session_configuration: dict[str, Any] | None, peers: list[dict[str, Any]] | None) -> str:
+    """Fingerprint of everything a save could overwrite."""
+
+    canonical = json.dumps(
+        {
+            "session": session_configuration,
+            "peers": None if peers is None else [[peer["id"], peer["observe_me"], peer["observe_others"]] for peer in peers],
+        },
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _settings_capabilities(version: tuple[int, int, int] | None) -> tuple[dict[str, bool], dict[str, str]]:
+    if version is None:
+        reason = "Couldn't confirm this Honcho server's version, so these settings are read-only."
+        return {"learning": False, "observation": False}, {"learning": reason, "observation": reason}
+    if version >= SETTINGS_MIN_SERVER:
+        return {"learning": True, "observation": True}, {}
+    reason = f"Changing these needs Honcho 3.0.0 or later. This server runs {'.'.join(map(str, version))}."
+    return {"learning": False, "observation": False}, {"learning": reason, "observation": reason}
+
+
+def _settings_base(result: dict[str, Any], config: Any) -> None:
+    result.update(
+        capabilities={"learning": False, "observation": False},
+        reasons={},
+        server_version=None,
+        revision=None,
+        learning=[],
+        peers=[],
+        peers_truncated=False,
+        queue=None,
+        user_peer=getattr(config, "peer_name", None) if config is not None else None,
+        ai_peer=getattr(config, "ai_peer", None) if config is not None else None,
+    )
+
+
+def _load_settings(result: dict[str, Any], config: Any, client: Any, current_session: Any) -> dict[str, Any]:
+    """Fill `result` with the session's settings. Each read degrades alone.
+
+    Returns the raw values a save needs. A key is None when its read failed.
+    """
+
+    state: dict[str, Any] = {"session_configuration": None, "peers": None}
+    version = _server_version(client)
+    result["server_version"] = ".".join(map(str, version)) if version else None
+    capabilities, reasons = _settings_capabilities(version)
+
+    def fail(scope: str, exc: Exception) -> None:
+        result["errors"].append({"scope": f"settings.{scope}", "message": _safe_error(exc)})
+
+    try:
+        http = _settings_transport(client)
+        root = _session_root(client, result["session_id"])
+    except Exception as exc:
+        fail("transport", exc)
+        result.update(ok=False, state="unsupported_sdk", capabilities={"learning": False, "observation": False})
+        return state
+
+    try:
+        state["session_configuration"] = _configuration_dict(
+            _exact_configuration(client, _sessions_list_path(client), result["session_id"]), "session"
+        )
+    except Exception as exc:
+        fail("session", exc)
+    workspace = None
+    try:
+        workspace = _effective_learning(
+            _configuration_dict(_exact_configuration(client, WORKSPACES_LIST_PATH, result["workspace_id"]), "workspace")
+        )
+    except Exception as exc:
+        fail("workspace", exc)
+    try:
+        state["peers"], result["peers_truncated"] = _read_settings_peers(http, root, config)
+    except Exception as exc:
+        fail("peers", exc)
+    try:
+        queue_status = getattr(current_session, "queue_status", None)
+        if not callable(queue_status):
+            raise RuntimeError("Installed honcho-ai does not expose session queue status.")
+        result["queue"] = _queue_payload(queue_status())
+    except Exception as exc:
+        fail("queue", exc)
+
+    if state["session_configuration"] is None:
+        capabilities["learning"] = False
+        reasons["learning"] = "Couldn't read this session's settings."
+    else:
+        result["learning"] = _learning_payload(state["session_configuration"], workspace)
+    if state["peers"] is None:
+        capabilities["observation"] = False
+        reasons["observation"] = "Couldn't read this session's peers."
+    else:
+        result["peers"] = state["peers"]
+
+    result.update(capabilities=capabilities, reasons=reasons)
+    result["revision"] = _settings_revision(state["session_configuration"], state["peers"])
+    if state["session_configuration"] is None and state["peers"] is None:
+        result.update(ok=False, state="unavailable")
+    elif result["errors"]:
+        result["state"] = "partial"
+    return state
+
+
+def _collect_session_settings(request: SessionSettingsRequest, **factories: Any) -> dict[str, Any]:
+    result, config, client, current_session = _prepare_read(
+        request,
+        config_factory=factories.get("config_factory"),
+        client_factory=factories.get("client_factory"),
+        session_metadata_loader=factories.get("session_metadata_loader"),
+    )
+    _settings_base(result, config)
+    if current_session is not None:
+        _load_settings(result, config, client, current_session)
+    return result
+
+
+def _settings_target(request: SnapshotRequest, **factories: Any) -> tuple:
+    result, config, client, current_session = _prepare_read(
+        request,
+        config_factory=factories.get("config_factory"),
+        client_factory=_isolated_client_factory(factories),
+        session_metadata_loader=factories.get("session_metadata_loader"),
+    )
+    _settings_base(result, config)
+    result["target"] = {"workspace_id": result.get("workspace_id"), "session_id": result.get("session_id")}
+    return result, config, client, current_session
+
+
+def _plan_settings_changes(learning: dict[str, str], observation: dict[str, dict[str, str | None]], result: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate requested values against what Honcho returned. Drops no-ops."""
+
+    planned: list[dict[str, Any]] = []
+    if learning:
+        if not result["capabilities"]["learning"]:
+            raise ValueError(result["reasons"].get("learning") or "These settings can't be changed here.")
+        stored = _explicit_learning(state["session_configuration"])
+        for key, choice in learning.items():
+            current = _choice(stored[key], "inherit")
+            if current != choice:
+                planned.append({"id": f"learning.{key}", "kind": "learning", "key": key, "from": current, "to": choice})
+    if observation:
+        if not result["capabilities"]["observation"]:
+            raise ValueError(result["reasons"].get("observation") or "These settings can't be changed here.")
+        peers = {peer["id"]: peer for peer in state["peers"]}
+        for peer_id, change in observation.items():
+            peer = peers.get(peer_id)
+            if peer is None:
+                raise ValueError(f"{peer_id} isn't a peer in this session.")
+            for field in ("observe_me", "observe_others"):
+                choice = change.get(field)
+                current = _choice(peer[field], "unset")
+                if choice is not None and current != choice:
+                    planned.append({"id": f"observation.{peer_id}.{field}", "kind": "observation", "peer_id": peer_id, "field": field, "from": current, "to": choice})
+    return planned
+
+
+def _settings_error(result: dict[str, Any], message: str, state: str) -> dict[str, Any]:
+    result.update(ok=False, state=state)
+    result["errors"].append({"scope": "settings", "message": message})
+    return result
+
+
+def _collect_session_settings_ticket(request: SessionSettingsTicketRequest, **factories: Any) -> dict[str, Any]:
+    result, config, client, current_session = _settings_target(request, **factories)
+    result.update(ticket=None, changes=[])
+    if current_session is None:
+        return result
+    if not request.has_changes():
+        return _settings_error(result, "There are no changes to save.", "rejected")
+    state = _load_settings(result, config, client, current_session)
+    if not result["ok"]:
+        return result
+    if result["revision"] != request.revision:
+        return _settings_error(result, "These settings changed after you opened them. Review the current values, then save again.", "stale")
+    learning: dict[str, str] = {str(key): str(value) for key, value in request.learning.items()}
+    observation = {peer: change.model_dump() for peer, change in request.observation.items()}
+    try:
+        planned = _plan_settings_changes(learning, observation, result, state)
+    except ValueError as exc:
+        return _settings_error(result, _safe_error(exc), "rejected")
+    if not planned:
+        return _settings_error(result, "Nothing to save. These settings already have the values you chose.", "rejected")
+    now = time.time()
+    token = secrets.token_urlsafe(24)
+    with _upload_ticket_lock:
+        for key in [key for key, value in _settings_tickets.items() if value["expires_at"] <= now]:
+            _settings_tickets.pop(key)
+        if len(_settings_tickets) >= 128:
+            return _settings_error(result, "Too many pending confirmations. Wait two minutes and retry.", "rejected")
+        _settings_tickets[token] = {
+            "focus": {key: getattr(request, key) for key in SnapshotRequest.model_fields},
+            "target": dict(result["target"]),
+            "revision": request.revision,
+            "learning": learning,
+            "observation": observation,
+            "expires_at": now + SETTINGS_TICKET_TTL_SECONDS,
+        }
+    result.update(ticket=token, state="ready", changes=planned)
+    return result
+
+
+def _session_configuration_patch(stored: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Whole sections to send, each rebuilt from the stored section."""
+
+    patch: dict[str, Any] = {}
+    for change in changes:
+        section_name, field = LEARNING_FIELDS[change["key"]]
+        if section_name not in patch:
+            current = stored.get(section_name)
+            patch[section_name] = dict(current) if isinstance(current, dict) else {}
+        if change["to"] == "inherit":
+            patch[section_name].pop(field, None)
+        else:
+            patch[section_name][field] = change["to"] == "on"
+    return patch
+
+
+def _stored_value(change: dict[str, Any], learning: list[dict[str, Any]], peers: list[dict[str, Any]]) -> str | None:
+    if change["kind"] == "learning":
+        row = next((row for row in learning if row["key"] == change["key"]), None)
+        return None if row is None else row["choice"]
+    peer = next((peer for peer in peers if peer["id"] == change["peer_id"]), None)
+    return None if peer is None else _choice(peer[change["field"]], "unset")
+
+
+def _collect_session_settings_save(request: SessionSettingsSaveRequest, **factories: Any) -> dict[str, Any]:
+    result = _operation_base(request)
+    result.update(outcome="rejected", verified=False, changes=[])
+    # Consume before any read or write. A ticket can't be replayed after a
+    # timeout or by another focused conversation.
+    with _upload_ticket_lock:
+        ticket = _settings_tickets.pop(request.ticket, None)
+    if ticket is None or ticket["expires_at"] <= time.time():
+        return _settings_error(result, "The confirmation expired or was already used.", "ticket_expired")
+    if ticket["focus"] != {key: getattr(request, key) for key in SnapshotRequest.model_fields}:
+        return _settings_error(result, "The confirmation belongs to a different conversation or profile.", "ticket_mismatch")
+
+    prepared, config, client, current_session = _settings_target(request, **factories)
+    result.update(prepared)
+    result.update(outcome="rejected", verified=False, changes=[])
+    # A session update is get-or-create on the server. Never send one unless
+    # the session was found again just now.
+    if current_session is None:
+        return result
+    if ticket["target"] != result["target"]:
+        return _settings_error(result, "The Honcho session changed after confirmation. Nothing was saved.", "ticket_mismatch")
+    state = _load_settings(result, config, client, current_session)
+    if not result["ok"] or state["session_configuration"] is None or (ticket["observation"] and state["peers"] is None):
+        message = result["errors"][0]["message"] if result["errors"] else "Couldn't read the current settings."
+        return _settings_error(result, f"{message} Nothing was saved.", "unavailable")
+    if result["revision"] != ticket["revision"]:
+        return _settings_error(result, "These settings changed after you reviewed them. Nothing was saved. Review the current values, then save again.", "stale")
+    try:
+        planned = _plan_settings_changes(ticket["learning"], ticket["observation"], result, state)
+    except ValueError as exc:
+        return _settings_error(result, f"{_safe_error(exc)} Nothing was saved.", "rejected")
+    if not planned:
+        return _settings_error(result, "Nothing to save. These settings already have the values you chose.", "rejected")
+
+    http = _settings_transport(client)
+    root = _session_root(client, result["session_id"])
+    sent: set[str] = set()
+    write_error = None
+    try:
+        learning_changes = [change for change in planned if change["kind"] == "learning"]
+        if learning_changes:
+            body = _session_configuration_patch(state["session_configuration"], learning_changes)
+            sent.update(change["id"] for change in learning_changes)
+            http.put(root, body={"configuration": body})
+        by_peer: dict[str, list[dict[str, Any]]] = {}
+        for change in planned:
+            if change["kind"] == "observation":
+                by_peer.setdefault(change["peer_id"], []).append(change)
+        for peer_id, changes in by_peer.items():
+            sent.update(change["id"] for change in changes)
+            # Honcho merges the fields it is sent, so unchanged ones stay put.
+            http.put(f"{root}/peers/{quote(peer_id, safe='')}/config", body={change["field"]: change["to"] == "on" for change in changes})
+    except Exception as exc:
+        # No retry. Later writes are skipped and the readback decides.
+        write_error = _safe_error(exc)
+
+    readback: dict[str, Any] = {"session_id": result["session_id"], "workspace_id": result["workspace_id"], "errors": [], "ok": True, "state": "connected"}
+    _settings_base(readback, config)
+    _load_settings(readback, config, client, current_session)
+    failed_reads = {error["scope"] for error in readback["errors"]}
+    readable = {
+        "learning": not failed_reads & {"settings.transport", "settings.session"},
+        "observation": not failed_reads & {"settings.transport", "settings.peers"},
+    }
+    for change in planned:
+        readback_ok = readable[change["kind"]]
+        stored = _stored_value(change, readback["learning"], readback["peers"]) if readback_ok else None
+        if stored == change["to"]:
+            status = "verified"
+        elif not readback_ok:
+            status = "unknown" if change["id"] in sent else "not_sent"
+        else:
+            status = "not_applied" if change["id"] in sent else "not_sent"
+        result["changes"].append({**change, "status": status})
+    for key in ("learning", "peers", "peers_truncated", "queue", "revision", "capabilities", "reasons", "server_version"):
+        result[key] = readback[key]
+
+    statuses = {change["status"] for change in result["changes"]}
+    result["errors"] = [error for error in readback["errors"]]
+    if write_error:
+        result["errors"].insert(0, {"scope": "settings.save", "message": write_error})
+    if statuses == {"verified"}:
+        result.update(ok=True, verified=True, outcome="verified", state="verified")
+    elif "unknown" in statuses:
+        result.update(ok=False, outcome="unknown", state="outcome_unknown")
+    elif "verified" in statuses:
+        result.update(ok=False, outcome="partial", state="partial")
+    else:
+        result.update(ok=False, outcome="rejected", state="rejected")
+    if result["outcome"] != "verified" and not result["errors"]:
+        result["errors"].append({"scope": "settings.save", "message": "Honcho didn't return the new values."})
+    return result
+
+
 def _collect_snapshot(
     request: SnapshotRequest,
     *,
@@ -2511,6 +3037,31 @@ async def instructions(request: InstructionsRequest, profile: str | None = None)
     """Return the custom instructions Honcho 3.3+ applies to the focused session."""
 
     return await _run_collector(request, _collect_instructions, profile)
+
+
+@router.post("/session-settings")
+async def session_settings(request: SessionSettingsRequest, profile: str | None = None) -> dict[str, Any]:
+    """Return what Honcho learns from new messages in the focused session."""
+
+    return await _run_collector(request, _collect_session_settings, profile)
+
+
+@router.post("/session-settings-ticket")
+async def session_settings_ticket(request: SessionSettingsTicketRequest, profile: str | None = None) -> dict[str, Any]:
+    """Validate reviewed changes against the current values. Writes nothing."""
+
+    return await _run_collector(request, _collect_session_settings_ticket, profile)
+
+
+@router.post("/session-settings-save")
+async def session_settings_save(request: SessionSettingsSaveRequest, profile: str | None = None) -> dict[str, Any]:
+    """Consume one confirmed ticket, write it once, and read every value back."""
+
+    result = await _run_collector(request, _collect_session_settings_save, profile, timeout=40)
+    if "outcome" not in result:
+        # Timed out or failed inside the worker: a write may have landed.
+        result.update(verified=False, outcome="unknown", changes=[])
+    return result
 
 
 @router.post("/activity")

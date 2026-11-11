@@ -27,6 +27,11 @@ captures, not screenshots of an activated plugin in a running Desktop/SSH sessio
 | [Instructions, pane](instructions-pane.png) | The same in the docked pane |
 | [Ask and instructions](ask-instructions.png) | The instructions an answer will follow |
 | [Status](diagnostics.png) | Connection, profile, mapping and queues |
+| [Settings](settings.png) | What Honcho learns from the session, each value with its source |
+| [Settings review](settings-review.png) | Two unsaved changes, the review list and the Save bar |
+| [Settings saved](settings-saved.png) | Values read back after a verified save |
+| [Settings, pane](settings-pane.png) | The same in the docked pane, with the Hermes recall note |
+| [Settings, old server](settings-unsupported.png) | Read-only on Honcho before 3.0.0 |
 | [Add to session](add-to-session.png) | Target confirmation, no write |
 | [Correction](correction.png) | Additive correction confirmation |
 | [Memory pane](memory-pane.png) | Docked pane, dark |
@@ -39,7 +44,8 @@ captures, not screenshots of an activated plugin in a running Desktop/SSH sessio
 | [Disconnected](disconnected.png) | Backend unavailable without fallback |
 
 The light captures `ask-light.png`, `correction-light.png`, `search-light.png`,
-`status-light.png` and `memory-pane-detail-light.png` cover the light theme.
+`settings-light.png`, `status-light.png` and `memory-pane-detail-light.png`
+cover the light theme.
 The catalog art in [`docs/catalog`](../catalog) uses the dark captures.
 
 ## Reproduce
@@ -66,6 +72,12 @@ unknown outcomes, disabled capabilities, and axe accessibility.
 `SCREENSHOT_OUTPUT_DIR` can redirect captures to scratch. `verification.json`
 records dimensions, the tested host commit, the plugin SHA-256 and
 runtime/network checks. OS font rendering may vary.
+
+The current gallery was captured against host `2bd378ed1b`. On that build the
+three steps that change host focus after an in-plugin click (stale correction,
+delayed question, pane focus handoff) time out before and after 0.6.0, so they
+were left out of that run. They capture no images. `verification.json` lists
+them under `skipped`. They last passed against host `bf0203a794`.
 
 `catalog-art.mjs` composes the 2:1 banner and the six gallery images from these
 captures and the generated drawings in [`docs/catalog/art`](../catalog/art/README.md).

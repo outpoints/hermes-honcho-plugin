@@ -65,10 +65,10 @@ test('focus-qualified requests fail closed and prevent stale-chat reuse', () => 
 })
 
 test('implements every section and bounded backend endpoint', () => {
-  for (const section of ['memory', 'ask', 'messages', 'context', 'status']) {
+  for (const section of ['memory', 'ask', 'messages', 'context', 'settings', 'status']) {
     assert.match(source, new RegExp(`id: '${section}'`))
   }
-  for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/conclusion-search', '/conclusion-detail', '/context', '/search', '/scopes', '/activity', '/ask', '/capabilities', '/correction-ticket', '/corrections', '/upload-ticket', '/instructions']) {
+  for (const endpoint of ['/snapshot', '/messages', '/conclusions', '/conclusion-search', '/conclusion-detail', '/context', '/search', '/scopes', '/activity', '/ask', '/capabilities', '/correction-ticket', '/corrections', '/upload-ticket', '/instructions', '/session-settings', '/session-settings-ticket', '/session-settings-save']) {
     assert.match(source, new RegExp(`'${endpoint}'`))
   }
   assert.match(source, /const PAGE_SIZE = 25/)

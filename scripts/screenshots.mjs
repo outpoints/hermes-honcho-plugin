@@ -1,7 +1,7 @@
 // Development-only capture harness. The shipped plugin remains uncompiled ESM.
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { readFile, readdir, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { dirname, resolve, join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,7 +22,11 @@ const work = await mkdtemp(join(resolve(scratch), 'honcho-screens-'))
 const output = process.env.SCREENSHOT_OUTPUT_DIR ? resolve(process.env.SCREENSHOT_OUTPUT_DIR) : join(repo, 'docs/screenshots')
 await mkdir(output, { recursive: true })
 const hostHtml = await readFile(join(dist, 'index.html'), 'utf8')
-const cssLinks = [...hostHtml.matchAll(/href="([^"]+\.css)"/g)].map(m => m[1])
+let cssLinks = [...hostHtml.matchAll(/href="([^"]+\.css)"/g)].map(m => m[1])
+// Newer builds inject every stylesheet from their scripts, so index.html
+// links none. Load each shipped stylesheet, as the app does once the
+// components that own them mount.
+if (!cssLinks.length) cssLinks = (await readdir(join(dist, 'assets'))).filter(name => name.endsWith('.css')).sort().map(name => `/assets/${name}`)
 assert(cssLinks.length, 'Build Hermes Desktop first: no shipped stylesheet found.')
 const sdkSource = await readFile(join(src, 'sdk/index.ts'), 'utf8')
 const pluginSource = await readFile(join(repo, 'desktop/plugin.js'), 'utf8')
@@ -167,6 +171,34 @@ try {
   }
   await checkAccessibility('status')
 
+  // Session settings: each value with its source, a reviewed change, and a
+  // verified save. Opening the tab or moving a control writes nothing.
+  await page.setViewportSize({ width: 1200, height: 1000 })
+  await tab('Settings').click(); await settled()
+  await page.getByRole('heading', { name: 'Learning from new messages', exact: true }).waitFor()
+  await capture('settings.png')
+  await checkAccessibility('settings')
+  await page.getByRole('group', { name: 'Conclusions', exact: true }).getByRole('button', { name: 'Off', exact: true }).click()
+  await page.getByRole('list', { name: 'Settings for demo-user', exact: true }).getByRole('group', { name: 'Learn from their messages', exact: true }).getByRole('button', { name: 'Off', exact: true }).click()
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  assert.equal(await page.getByText('Skipped while conclusions are off.', { exact: true }).count(), 2, 'Dreams and peer card updates follow conclusions')
+  assert.equal(await page.evaluate(() => window.demoCalls.some(call => call.path.startsWith('/session-settings-'))), false, 'Changing a control must not write')
+  await capture('settings-review.png')
+  await checkAccessibility('settings-review')
+  // Moving a control back removes it from the review.
+  await page.getByRole('group', { name: 'Conclusions', exact: true }).getByRole('button', { name: 'Inherit', exact: true }).click()
+  await page.getByRole('button', { name: 'Save 1 change', exact: true }).waitFor()
+  await page.getByRole('group', { name: 'Conclusions', exact: true }).getByRole('button', { name: 'Off', exact: true }).click()
+  await page.getByRole('button', { name: 'Save 2 changes', exact: true }).evaluate(button => { button.click(); button.click() })
+  await page.getByText('Saved and verified', { exact: true }).waitFor()
+  assert.equal(await page.evaluate(() => window.demoCalls.filter(call => call.path.startsWith('/session-settings-ticket')).length), 1, 'A double click saves once')
+  assert.equal(await page.evaluate(() => window.demoCalls.filter(call => call.path.startsWith('/session-settings-save')).length), 1)
+  await page.getByText('Off · set for this session', { exact: true }).first().waitFor()
+  await settled()
+  await capture('settings-saved.png')
+  await checkAccessibility('settings-saved')
+  await page.setViewportSize({ width: 1200, height: 800 })
+
   // A preview budget too small for the stored summary says so and offers a
   // larger one, instead of reporting that no summary exists.
   await tab('Context').click(); await settled()
@@ -262,10 +294,16 @@ try {
   await page.getByRole('textbox', { name: 'Search messages', exact: true }).press('Enter')
   await page.getByText('Results for “routes”').waitFor()
   await capture('search-light.png')
+  await page.setViewportSize({ width: 1200, height: 1000 })
+  await tab('Settings').click(); await settled()
+  await page.getByRole('heading', { name: 'Learning from new messages', exact: true }).waitFor()
+  await capture('settings-light.png')
+  await checkAccessibility('settings-light')
+  await page.setViewportSize({ width: 1200, height: 800 })
   await tab('Status').click(); await settled()
   await capture('status-light.png')
   await checkAccessibility('status-light')
-  assert.equal(await page.evaluate(() => window.demoCalls.some(call => /\/correction|upload/.test(call.path))), false, 'Light gallery pass must not write')
+  assert.equal(await page.evaluate(() => window.demoCalls.some(call => /\/correction|upload|\/session-settings-/.test(call.path))), false, 'Light gallery pass must not write')
 
   await page.setViewportSize({ width: 1600, height: 1000 })
   await page.goto(origin); await ready(); await settled(); await capture('memory-wide.png')
@@ -282,6 +320,20 @@ try {
   await page.getByRole('button', { name: 'All conclusions' }).waitFor(); await settled()
   await capture('memory-pane-detail.png')
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Narrow inspector must not overflow')
+  await page.setViewportSize({ width: 380, height: 1700 })
+  await page.goto(`${origin}/?pane=1`); await ready(); await settled()
+  await page.getByRole('button', { name: /^Section:/ }).click()
+  await page.getByRole('menuitem', { name: /^Settings/ }).click()
+  await page.getByRole('heading', { name: 'Peers in this session', exact: true }).waitFor(); await settled()
+  await page.getByRole('list', { name: 'Settings for demo-assistant', exact: true }).getByRole('group', { name: 'Build a view of others', exact: true }).getByRole('button', { name: 'Off', exact: true }).click()
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  await capture('settings-pane.png')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Narrow settings must not overflow')
+  await checkAccessibility('settings-pane')
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
+  assert.equal(await page.getByRole('heading', { name: 'Review changes', exact: true }).count(), 0)
+  assert.equal(await page.evaluate(() => window.demoCalls.some(call => call.path.startsWith('/session-settings-'))), false, 'Discard must not write')
+  await page.setViewportSize({ width: 380, height: 1100 })
   await page.goto(`${origin}/?pane=1&theme=light`); await ready(); await settled(); await capture('memory-narrow-light.png')
   await checkAccessibility('memory-narrow-light')
   await page.getByRole('button', { name: /Morning-length routes/ }).click()
@@ -295,6 +347,13 @@ try {
   await capture('unsupported.png')
   assert.equal(await page.evaluate(() => window.demoCalls.some(call => call.path.startsWith('/ask'))), false)
   assert.equal(await page.getByRole('button', { name: 'Ask memory', exact: true }).isDisabled(), true)
+  await page.setViewportSize({ width: 1200, height: 1000 })
+  await tab('Settings').click(); await settled()
+  await page.getByText('Changing these needs Honcho 3.0.0 or later.', { exact: false }).waitFor()
+  assert.equal(await page.getByRole('group', { name: 'Conclusions', exact: true }).getByRole('button', { name: 'Off', exact: true }).isDisabled(), true, 'Old servers lock the controls')
+  await capture('settings-unsupported.png')
+  await checkAccessibility('settings-unsupported')
+  await page.setViewportSize({ width: 1200, height: 800 })
 
   await page.goto(`${origin}/?scenario=unknown-correction`); await ready(); await settled()
   await page.getByRole('button', { name: 'Add fact', exact: true }).click()
@@ -377,7 +436,7 @@ try {
     host_commit: execFileSync('git', ['-C', hostRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     plugin_sha256: (await import('node:crypto')).createHash('sha256').update(pluginSource).digest('hex'),
     captures, accessibility, browser_errors: errors, external_requests: blocked, upload_requests: 0,
-    exercised: ['landing does not reason or write', 'every section', 'conclusion search submits on Enter only', 'message search', 'premise inspection', 'explicit memory question', 'accessed record opens in the inspector', 'correction cancel without requests', 'confirmed synthetic correction', 'wide, pane, and inspector layouts in light and dark', 'unsupported capabilities', 'unknown write without retry', 'pending write dismissal and duplicate-submit guard', 'focus change suppresses stale answers and prevents confirmed write', 'another local profile reads in its owner profile', 'draft chat without a session', 'disconnected state', 'pane focus handoff retains inspected tile', 'portalled menu preserves inspection target', 'host sidebar navigation preserves inspection target without reading host markup', 'stored summary shown when the preview budget is too small', 'custom instructions on wide and pane layouts and under Ask', 'no instructions on servers before 3.3.0']
+    exercised: ['landing does not reason or write', 'every section', 'conclusion search submits on Enter only', 'message search', 'premise inspection', 'explicit memory question', 'accessed record opens in the inspector', 'correction cancel without requests', 'confirmed synthetic correction', 'wide, pane, and inspector layouts in light and dark', 'unsupported capabilities', 'unknown write without retry', 'pending write dismissal and duplicate-submit guard', 'focus change suppresses stale answers and prevents confirmed write', 'another local profile reads in its owner profile', 'draft chat without a session', 'disconnected state', 'pane focus handoff retains inspected tile', 'portalled menu preserves inspection target', 'host sidebar navigation preserves inspection target without reading host markup', 'stored summary shown when the preview budget is too small', 'custom instructions on wide and pane layouts and under Ask', 'no instructions on servers before 3.3.0', 'session settings show each value and its source', 'changing a setting control writes nothing until Save', 'moving a control back removes it from the review', 'session settings save once on a double click and read back as verified', 'session settings on the narrow pane and in light theme', 'discarding settings changes writes nothing', 'settings locked on servers before 3.0.0']
   }
   await writeFile(join(output, 'verification.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
